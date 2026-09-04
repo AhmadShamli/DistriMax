@@ -4,7 +4,7 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.22%2B-00ADD8?logo=go)](https://golang.org)
 [![Zero CGO](https://img.shields.io/badge/CGO-Zero%20(Disabled)-success)](#zero-cgo-architecture)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Docker Ready](https://img.shields.io/badge/Docker-Multi--stage%20Rootless-2496ED?logo=docker)](Dockerfile)
 
 DistriMax is a secure, single-tenant distribution server that centralizes upstream MaxMind GeoLite MMDB database synchronization (City, Country, ASN), strictly enforces GeoLite compliance retention policies, and serves authenticated downloads to internal microservices, data pipelines, and distributed nodes.
@@ -275,4 +275,4 @@ go test -race ./...
 
 ## License
 
-DistriMax is open-source software licensed under the [Apache License 2.0](LICENSE).
+DistriMax is open-source software licensed under the [MIT License](LICENSE).
