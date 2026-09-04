@@ -146,7 +146,4 @@ VALUES
   ('download_concurrency_limit', '50', 0, 'system'),
   ('audit_retention_days', '90', 0, 'system'),
   ('artifact_retention_days', '30', 0, 'system'),
-  ('sync_schedule_cron', '0 4 * * *', 0, 'system'),
-  ('staleness_threshold_days', '8', 0, 'system'),
   ('storage_backend', 'filesystem', 0, 'system');
-

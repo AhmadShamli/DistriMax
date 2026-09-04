@@ -49,6 +49,29 @@ func TestDBOpenAndMigrations(t *testing.T) {
 	if setupCompleted != "false" {
 		t.Errorf("expected setup_completed to be 'false', got %s", setupCompleted)
 	}
+
+	// Verify migration 2 settings
+	var cronVal, stalenessVal string
+	if err := database.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'sync_schedule_cron'").Scan(&cronVal); err != nil {
+		t.Fatalf("failed to query sync_schedule_cron setting: %v", err)
+	}
+	if cronVal != "0 4 * * *" {
+		t.Errorf("expected sync_schedule_cron '0 4 * * *', got %s", cronVal)
+	}
+	if err := database.QueryRowContext(ctx, "SELECT value FROM settings WHERE key = 'staleness_threshold_days'").Scan(&stalenessVal); err != nil {
+		t.Fatalf("failed to query staleness_threshold_days setting: %v", err)
+	}
+	if stalenessVal != "8" {
+		t.Errorf("expected staleness_threshold_days '8', got %s", stalenessVal)
+	}
+
+	var migCount int
+	if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migCount); err != nil {
+		t.Fatalf("failed to count schema_migrations: %v", err)
+	}
+	if migCount != 2 {
+		t.Errorf("expected 2 applied schema migrations, got %d", migCount)
+	}
 }
 
 func TestDBTransactions(t *testing.T) {
