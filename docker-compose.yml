@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  distrimax:
+    build: .
+    container_name: distrimax
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - distrimax_data:/var/lib/distrimax
+    env_file:
+      - .env
+
+volumes:
+  distrimax_data:
+    driver: local

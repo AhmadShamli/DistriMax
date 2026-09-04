@@ -1,0 +1,7 @@
+/distrimax
+*.sqlite3*
+.env
+/scratch/
+/artifacts/
+/staging/
+/backups/
