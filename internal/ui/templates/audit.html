@@ -1,0 +1,81 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Request Audit Logs</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Full request telemetry across all client APIs, metadata endpoints, and administrative routes (90-day retention).</p>
+</div>
+
+<!-- Filters -->
+<div class="card" style="margin-bottom: 2rem;">
+  <form method="GET" action="/admin/audit" style="display: flex; gap: 1rem; align-items: flex-end;">
+    <div class="form-group" style="margin-bottom: 0; flex: 1;">
+      <label>Filter by Product</label>
+      <select name="product">
+        <option value="">All Products</option>
+        <option value="geolite-city" {{if eq .SelectedProduct "geolite-city"}}selected{{end}}>GeoLite2 City</option>
+        <option value="geolite-country" {{if eq .SelectedProduct "geolite-country"}}selected{{end}}>GeoLite2 Country</option>
+        <option value="geolite-asn" {{if eq .SelectedProduct "geolite-asn"}}selected{{end}}>GeoLite2 ASN</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary" style="height: 40px;">Apply Filter</button>
+  </form>
+</div>
+
+<!-- Logs Table -->
+<div class="card">
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Source IP</th>
+          <th>Method</th>
+          <th>Path (Sanitized)</th>
+          <th>Status</th>
+          <th>Duration</th>
+          <th>Bytes</th>
+          <th>User Agent</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Logs}}
+        <tr>
+          <td>{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+          <td class="code-inline">{{.SourceIP}}</td>
+          <td><span class="badge badge-neutral">{{.Method}}</span></td>
+          <td class="code-inline" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{.Path}}">
+            {{.Path}}
+          </td>
+          <td>
+            <span class="badge {{if lt .Status 300}}badge-success{{else if lt .Status 400}}badge-neutral{{else}}badge-danger{{end}}">
+              {{.Status}}
+            </span>
+          </td>
+          <td>{{.DurationMs}} ms</td>
+          <td>{{.BytesSent}}</td>
+          <td style="color: var(--text-muted); font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{.UserAgent}}">
+            {{.UserAgent}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No request audit logs found.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem;">
+    <span style="font-size: 0.875rem; color: var(--text-muted);">Showing page {{.CurrentPage}} ({{.TotalCount}} total records)</span>
+    <div style="display: flex; gap: 0.5rem;">
+      {{if gt .CurrentPage 1}}
+        <a href="/admin/audit?page={{.PrevPage}}&product={{.SelectedProduct}}" class="btn btn-secondary btn-sm">&larr; Previous</a>
+      {{end}}
+      {{if .HasNextPage}}
+        <a href="/admin/audit?page={{.NextPage}}&product={{.SelectedProduct}}" class="btn btn-secondary btn-sm">Next &rarr;</a>
+      {{end}}
+    </div>
+  </div>
+</div>
+{{end}}

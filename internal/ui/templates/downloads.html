@@ -1,0 +1,59 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Download Analytics & Volumes</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Aggregated consumer download performance, bandwidth usage, and unique client telemetry.</p>
+</div>
+
+<!-- 24h Summary Cards -->
+<div class="grid grid-cols-3" style="margin-bottom: 2rem;">
+  <div class="card">
+    <div class="card-header"><span class="card-title">24h Total Downloads</span></div>
+    <div style="font-size: 2rem; font-weight: 700; color: var(--accent-blue);">{{.Stats.TotalRequests}}</div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">24h Successful Streams</span></div>
+    <div style="font-size: 2rem; font-weight: 700; color: var(--color-success);">{{.Stats.SuccessCount}}</div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">24h Bandwidth Served</span></div>
+    <div style="font-size: 2rem; font-weight: 700;">{{.Stats.BytesTransferred}} <span style="font-size: 1rem; color: var(--text-muted);">bytes</span></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">Recent Download Requests</span>
+    <a href="/admin/audit" class="btn btn-secondary btn-sm">View Full Audit Log</a>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Client IP</th>
+          <th>Product</th>
+          <th>Status</th>
+          <th>Duration</th>
+          <th>Bytes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .RecentDownloads}}
+        <tr>
+          <td>{{.Timestamp.Format "2006-01-02 15:04:05"}}</td>
+          <td class="code-inline">{{.SourceIP}}</td>
+          <td><span class="code-inline">{{if .ProductID}}{{.ProductID}}{{else}}-{{end}}</span></td>
+          <td><span class="badge {{if lt .Status 300}}badge-success{{else}}badge-danger{{end}}">{{.Status}}</span></td>
+          <td>{{.DurationMs}} ms</td>
+          <td>{{.BytesSent}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 2rem;">No download requests recorded yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

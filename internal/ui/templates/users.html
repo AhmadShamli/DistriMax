@@ -1,0 +1,85 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Administrator Accounts</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Manage engineering operators with administrative privileges. Passwords are hashed with Argon2id.</p>
+</div>
+
+<div class="grid grid-cols-2" style="margin-bottom: 2rem;">
+  <!-- Create User -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Create Admin User</span></div>
+    <form action="/admin/users/create" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" name="username" required placeholder="admin_username">
+      </div>
+      <div class="form-group">
+        <label>Password (min 8 characters)</label>
+        <input type="password" name="password" required minlength="8">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Create Account</button>
+    </form>
+  </div>
+
+  <!-- Security Note -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Operator Access Controls</span></div>
+    <div style="font-size: 0.875rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.75rem;">
+      <p>DistriMax enforces strict safety protections on administrator accounts:</p>
+      <ul style="padding-left: 1.25rem;">
+        <li>You cannot disable or delete the sole remaining active administrator.</li>
+        <li>Sessions expire after 24 hours of inactivity.</li>
+        <li>Break-glass recovery is available via <span class="code-inline">/recover</span> using the environment recovery secret.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- Users Table -->
+<div class="card">
+  <div class="card-header"><span class="card-title">Registered Administrators</span></div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Username</th>
+          <th>Created At</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Users}}
+        <tr>
+          <td><strong>{{.Username}}</strong></td>
+          <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+          <td>
+            {{if .IsDisabled}}
+              <span class="badge badge-danger">DISABLED</span>
+            {{else}}
+              <span class="badge badge-success">ACTIVE</span>
+            {{end}}
+          </td>
+          <td style="display: flex; gap: 0.5rem;">
+            {{if not .IsDisabled}}
+              <form action="/admin/users/disable" method="POST" onsubmit="return confirm('Disable admin user {{.Username}}?');">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="user_id" value="{{.ID}}">
+                <button type="submit" class="btn btn-danger btn-sm">Disable</button>
+              </form>
+            {{else}}
+              <form action="/admin/users/enable" method="POST">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="user_id" value="{{.ID}}">
+                <button type="submit" class="btn btn-secondary btn-sm">Enable</button>
+              </form>
+            {{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

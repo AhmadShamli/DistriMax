@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}} - DistriMax</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <aside class="sidebar">
+      <div class="sidebar-logo">
+        <span>🌐</span> DistriMax
+      </div>
+      <ul class="sidebar-nav">
+        <li><a href="/admin/dashboard" class="{{if eq .ActiveNav "dashboard"}}active{{end}}">📊 Dashboard</a></li>
+        <li><a href="/admin/products" class="{{if eq .ActiveNav "products"}}active{{end}}">📦 Products</a></li>
+        <li><a href="/admin/downloads" class="{{if eq .ActiveNav "downloads"}}active{{end}}">📈 Downloads</a></li>
+        <li><a href="/admin/api-keys" class="{{if eq .ActiveNav "apikeys"}}active{{end}}">🔑 API Keys</a></li>
+        <li><a href="/admin/operations" class="{{if eq .ActiveNav "operations"}}active{{end}}">⚙️ Operations</a></li>
+        <li><a href="/admin/audit" class="{{if eq .ActiveNav "audit"}}active{{end}}">📜 Audit Logs</a></li>
+        <li><a href="/admin/users" class="{{if eq .ActiveNav "users"}}active{{end}}">👥 Users</a></li>
+        <li><a href="/admin/settings" class="{{if eq .ActiveNav "settings"}}active{{end}}">🛠️ Settings</a></li>
+      </ul>
+      <div style="font-size: 0.75rem; color: var(--text-muted); padding: 0.5rem;">
+        v1.0.0 &bull; MaxMind MMDB
+      </div>
+    </aside>
+
+    <div class="main-wrapper">
+      <header class="header">
+        <div class="header-left">
+          <span class="badge {{if eq .HealthStatus "HEALTHY"}}badge-success{{else if eq .HealthStatus "DEGRADED"}}badge-warning{{else}}badge-danger{{end}}">
+            ● {{.HealthStatus}}
+          </span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">
+            {{.ActiveProductCount}} Active Products
+          </span>
+        </div>
+        <div class="header-right">
+          <span style="font-size: 0.85rem; font-weight: 500;">👤 {{.CurrentUser.Username}}</span>
+          <form action="/admin/logout" method="POST" style="display:inline;">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
+          </form>
+        </div>
+      </header>
+
+      <main class="content">
+        {{if .FlashSuccess}}
+          <div class="flash-banner flash-success">
+            <span>✓ {{.FlashSuccess}}</span>
+          </div>
+        {{end}}
+        {{if .FlashError}}
+          <div class="flash-banner flash-error">
+            <span>✕ {{.FlashError}}</span>
+          </div>
+        {{end}}
+
+        {{template "content" .}}
+      </main>
+    </div>
+  </div>
+</body>
+</html>

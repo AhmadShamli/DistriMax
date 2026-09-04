@@ -1,0 +1,88 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Product Catalog & Versions</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Manage configured MMDB products, inspect checksums, trigger upstream syncs, and perform atomic rollbacks.</p>
+</div>
+
+{{range .Products}}
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-header">
+    <div>
+      <h2 style="font-size: 1.25rem; font-weight: 600;">{{.Product.DisplayName}}</h2>
+      <span class="code-inline" style="font-size: 0.8rem;">ID: {{.Product.ID}} &bull; Edition: {{.Product.EditionID}} &bull; File: {{.Product.ArtifactFilename}}</span>
+    </div>
+    <div style="display: flex; gap: 0.5rem; align-items: center;">
+      <span class="badge {{if .Product.IsEnabled}}badge-success{{else}}badge-neutral{{end}}">
+        {{if .Product.IsEnabled}}ENABLED{{else}}DISABLED{{end}}
+      </span>
+      <form action="/admin/products/sync" method="POST" style="display: inline;">
+        <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+        <input type="hidden" name="product_id" value="{{.Product.ID}}">
+        <button type="submit" class="btn btn-primary btn-sm">Sync Upstream</button>
+      </form>
+    </div>
+  </div>
+
+  <h3 style="font-size: 0.95rem; font-weight: 600; margin-bottom: 0.75rem; color: var(--text-muted);">Published Versions (Retained within 30-day compliance window)</h3>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Version</th>
+          <th>Release Date</th>
+          <th>SHA-256 Checksum</th>
+          <th>Size</th>
+          <th>State</th>
+          <th>Cleanup Deadline</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Versions}}
+        <tr>
+          <td class="code-inline">{{.Version}}</td>
+          <td>{{.ReleasedAt.Format "2006-01-02 15:04:05 UTC"}}</td>
+          <td>
+            <span class="code-inline" style="display: inline-block; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{.SHA256}}">
+              {{.SHA256}}
+            </span>
+          </td>
+          <td>{{.SizeBytes}} bytes</td>
+          <td>
+            {{if .IsCurrent}}
+              <span class="badge badge-success">CURRENT</span>
+            {{else}}
+              <span class="badge badge-neutral">SUPERSEDED</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .CleanupDeadline}}
+              {{.CleanupDeadline.Format "2006-01-02"}}
+            {{else}}
+              -
+            {{end}}
+          </td>
+          <td>
+            {{if not .IsCurrent}}
+              <form action="/admin/products/rollback" method="POST" onsubmit="return confirm('Promote version {{.Version}} to current? Active microservices will receive this version.');">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="product_id" value="{{.ProductID}}">
+                <input type="hidden" name="version" value="{{.Version}}">
+                <button type="submit" class="btn btn-secondary btn-sm">Rollback</button>
+              </form>
+            {{else}}
+              <span style="color: var(--color-success); font-size: 0.8rem; font-weight: 600;">Active</span>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No versions published yet. Trigger a sync to download from MaxMind.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}
+{{end}}

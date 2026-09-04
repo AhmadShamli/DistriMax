@@ -1,0 +1,95 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Operational Tasks & Sync History</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Execute manual maintenance jobs and inspect automated background sync and delivery logs.</p>
+</div>
+
+<!-- Manual Actions Grid -->
+<div class="grid grid-cols-3" style="margin-bottom: 2rem;">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Upstream Sync</span>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+      Queries MaxMind for all enabled products and downloads any new versions.
+    </p>
+    <form action="/admin/operations/sync-all" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button type="submit" class="btn btn-primary btn-sm" style="width: 100%;">Sync All Products</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Compliance Cleanup</span>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+      Purges superseded MMDB artifacts older than 30 days and audit logs beyond 90 days.
+    </p>
+    <form action="/admin/operations/cleanup" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Run Cleanup Now</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">SQLite Backup</span>
+    </div>
+    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
+      Generates an online non-blocking VACUUM INTO database snapshot on disk.
+    </p>
+    <form action="/admin/operations/backup" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Create Backup Snapshot</button>
+    </form>
+  </div>
+</div>
+
+<!-- Sync Runs Table -->
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">Recent Upstream Sync Runs</span>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Product</th>
+          <th>Trigger</th>
+          <th>Discovered Version</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Message</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .SyncRuns}}
+        <tr>
+          <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+          <td class="code-inline">{{.ProductID}}</td>
+          <td><span class="badge badge-neutral">{{.TriggerType}}</span></td>
+          <td>{{if .VersionDiscovered}}<span class="code-inline">{{.VersionDiscovered}}</span>{{else}}-{{end}}</td>
+          <td>{{.DurationMs}} ms</td>
+          <td>
+            {{if eq .Status "SUCCESS"}}
+              <span class="badge badge-success">SUCCESS</span>
+            {{else if eq .Status "SKIPPED"}}
+              <span class="badge badge-neutral">UP TO DATE</span>
+            {{else}}
+              <span class="badge badge-danger">FAILED</span>
+            {{end}}
+          </td>
+          <td style="color: var(--color-danger); font-size: 0.8rem;">{{.ErrorMessage}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No sync runs recorded yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

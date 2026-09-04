@@ -1,0 +1,174 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">System Configuration & Settings</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Manage upstream MaxMind credentials, storage backends, schedules, and webhooks. Sensitive credentials are AES-256-GCM encrypted in the SQLite database.</p>
+</div>
+
+<form action="/admin/settings/save" method="POST">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+  <!-- 1. MaxMind Upstream -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-header">
+      <span class="card-title">MaxMind Upstream Credentials</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="testMaxMind()">Test MaxMind Connection</button>
+    </div>
+    <div id="maxmind-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    <div class="grid grid-cols-2">
+      <div class="form-group">
+        <label>Account ID</label>
+        <input type="text" name="maxmind_account_id" value="{{.Settings.maxmind_account_id}}" placeholder="Your MaxMind Account ID">
+      </div>
+      <div class="form-group">
+        <label>License Key (Encrypted at rest)</label>
+        <input type="password" name="maxmind_license_key" placeholder="Enter new license key to update">
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. Storage Backend -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-header">
+      <span class="card-title">Storage Backend</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="testS3()">Test S3 Connection</button>
+    </div>
+    <div id="s3-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    <div class="form-group">
+      <label>Active Backend Driver</label>
+      <select name="storage_backend" id="storageBackendSelect">
+        <option value="filesystem" {{if eq .Settings.storage_backend "filesystem"}}selected{{end}}>Local Persistent Filesystem (/var/lib/distrimax/artifacts)</option>
+        <option value="s3" {{if eq .Settings.storage_backend "s3"}}selected{{end}}>S3-Compatible Object Storage (MinIO / AWS S3 / Cloudflare R2)</option>
+      </select>
+    </div>
+    <div class="grid grid-cols-2">
+      <div class="form-group">
+        <label>S3 Endpoint URL (leave empty for AWS S3)</label>
+        <input type="text" name="s3_endpoint" value="{{.Settings.s3_endpoint}}" placeholder="e.g. https://minio.internal:9000">
+      </div>
+      <div class="form-group">
+        <label>S3 Bucket Name</label>
+        <input type="text" name="s3_bucket" value="{{.Settings.s3_bucket}}" placeholder="e.g. distrimax-artifacts">
+      </div>
+      <div class="form-group">
+        <label>S3 Region</label>
+        <input type="text" name="s3_region" value="{{.Settings.s3_region}}" placeholder="e.g. us-east-1">
+      </div>
+      <div class="form-group">
+        <label>S3 Access Key ID</label>
+        <input type="text" name="s3_access_key_id" value="{{.Settings.s3_access_key_id}}">
+      </div>
+      <div class="form-group">
+        <label>S3 Secret Access Key (Encrypted at rest)</label>
+        <input type="password" name="s3_secret_access_key" placeholder="Enter new secret key to update">
+      </div>
+      <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 1.75rem;">
+        <input type="checkbox" name="s3_force_path_style" value="true" {{if eq .Settings.s3_force_path_style "true"}}checked{{end}} id="pathStyleCheck">
+        <label for="pathStyleCheck" style="margin-bottom: 0;">Force Path Style (Required for MinIO)</label>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3. Schedules & Retention -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-header">
+      <span class="card-title">Schedules & Compliance Retentions</span>
+    </div>
+    <div class="grid grid-cols-2">
+      <div class="form-group">
+        <label>Sync Cron Schedule</label>
+        <input type="text" name="sync_schedule_cron" value="{{.Settings.sync_schedule_cron}}">
+      </div>
+      <div class="form-group">
+        <label>Max Product Staleness Threshold (days)</label>
+        <input type="number" name="staleness_threshold_days" value="{{.Settings.staleness_threshold_days}}" min="1" max="90">
+      </div>
+      <div class="form-group">
+        <label>Superseded Artifact Retention (days, MaxMind GeoLite max: 30)</label>
+        <input type="number" name="artifact_retention_days" value="{{.Settings.artifact_retention_days}}" min="1" max="30">
+      </div>
+      <div class="form-group">
+        <label>Request Audit Log Retention (days)</label>
+        <input type="number" name="audit_retention_days" value="{{.Settings.audit_retention_days}}" min="7" max="365">
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. Webhook Notifications -->
+  <div class="card" style="margin-bottom: 2rem;">
+    <div class="card-header">
+      <span class="card-title">Event Webhook Notifications</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="testWebhook()">Send Test Webhook</button>
+    </div>
+    <div id="webhook-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    <div class="grid grid-cols-2">
+      <div class="form-group">
+        <label>Webhook URL (HTTP POST target)</label>
+        <input type="text" name="webhook_url" value="{{.Settings.webhook_url}}" placeholder="https://internal.ops/webhooks/geolite">
+      </div>
+      <div class="form-group">
+        <label>Webhook HMAC Secret Key (Encrypted at rest)</label>
+        <input type="password" name="webhook_hmac_secret" placeholder="Enter new secret to update">
+      </div>
+    </div>
+  </div>
+
+  <button type="submit" class="btn btn-primary" style="padding: 0.75rem 2rem; font-size: 1rem;">Save All Settings</button>
+</form>
+
+<script>
+function testMaxMind() {
+  const el = document.getElementById('maxmind-test-result');
+  el.style.display = 'block';
+  el.className = 'flash-banner flash-success';
+  el.innerText = 'Testing connection to download.maxmind.com...';
+  fetch('/admin/settings/test-maxmind', { method: 'POST', headers: {'X-CSRF-Token': '{{.CSRFToken}}'} })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        el.className = 'flash-banner flash-success';
+        el.innerText = '✓ MaxMind credentials verified successfully!';
+      } else {
+        el.className = 'flash-banner flash-error';
+        el.innerText = '✕ ' + data.error;
+      }
+    })
+    .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
+}
+function testS3() {
+  const el = document.getElementById('s3-test-result');
+  el.style.display = 'block';
+  el.className = 'flash-banner flash-success';
+  el.innerText = 'Testing S3 bucket connection...';
+  fetch('/admin/settings/test-s3', { method: 'POST', headers: {'X-CSRF-Token': '{{.CSRFToken}}'} })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        el.className = 'flash-banner flash-success';
+        el.innerText = '✓ S3 bucket connectivity verified!';
+      } else {
+        el.className = 'flash-banner flash-error';
+        el.innerText = '✕ ' + data.error;
+      }
+    })
+    .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
+}
+function testWebhook() {
+  const el = document.getElementById('webhook-test-result');
+  el.style.display = 'block';
+  el.className = 'flash-banner flash-success';
+  el.innerText = 'Dispatching test ping to webhook target...';
+  fetch('/admin/settings/test-webhook', { method: 'POST', headers: {'X-CSRF-Token': '{{.CSRFToken}}'} })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        el.className = 'flash-banner flash-success';
+        el.innerText = '✓ Test webhook received HTTP ' + data.status_code;
+      } else {
+        el.className = 'flash-banner flash-error';
+        el.innerText = '✕ ' + data.error;
+      }
+    })
+    .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
+}
+</script>
+{{end}}

@@ -1,0 +1,143 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Client API Keys</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Manage authentication credentials for internal microservices downloading MMDB artifacts.</p>
+</div>
+
+{{if .NewKeySecret}}
+<div class="card" style="border: 2px solid var(--accent-blue); background-color: rgba(56, 189, 248, 0.05); margin-bottom: 2rem;">
+  <div class="card-header">
+    <span class="card-title" style="color: var(--accent-blue);">🔑 API Key Created Successfully</span>
+    <span class="badge badge-warning">Show Once Warning</span>
+  </div>
+  <p style="font-size: 0.9rem; margin-bottom: 1rem;">
+    This secret token will <strong>never be displayed again</strong>. Copy and store it immediately in your service configuration or secrets manager:
+  </p>
+  <div style="display: flex; gap: 0.5rem; align-items: center; margin-bottom: 0.5rem;">
+    <input type="text" readonly value="{{.NewKeySecret}}" id="newSecretInput" style="font-family: var(--font-mono); font-size: 1rem; font-weight: 600; color: var(--accent-blue);">
+    <button class="btn btn-primary" onclick="navigator.clipboard.writeText(document.getElementById('newSecretInput').value); alert('API Key copied to clipboard!');">Copy</button>
+  </div>
+</div>
+{{end}}
+
+<div class="grid grid-cols-2" style="margin-bottom: 2rem;">
+  <!-- Create Key Form -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Generate New API Key</span>
+    </div>
+    <form action="/admin/api-keys/create" method="POST">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <div class="form-group">
+        <label>Client Display Name</label>
+        <input type="text" name="display_name" required placeholder="e.g. Ingress Gateway Cluster">
+      </div>
+      <div class="form-group">
+        <label>Allowed Products</label>
+        <select name="allowed_products">
+          <option value="*">All Products (*)</option>
+          <option value="geolite-city">GeoLite2 City Only</option>
+          <option value="geolite-country">GeoLite2 Country Only</option>
+          <option value="geolite-asn">GeoLite2 ASN Only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Scopes</label>
+        <input type="text" name="scopes" value="manifest:read,download" readonly>
+      </div>
+      <div class="form-group">
+        <label>Rate Limit (requests per minute)</label>
+        <input type="number" name="rate_limit_per_min" value="60" min="1" max="10000">
+      </div>
+      <button type="submit" class="btn btn-primary" style="width: 100%;">Create API Key</button>
+    </form>
+  </div>
+
+  <!-- Key Usage Guidance -->
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Usage Documentation</span>
+    </div>
+    <div style="font-size: 0.875rem; color: var(--text-muted); display: flex; flex-direction: column; gap: 0.75rem;">
+      <p>Clients can authenticate using either of the following methods:</p>
+      <div>
+        <strong>HTTP Header:</strong>
+        <div class="code-inline" style="display: block; margin-top: 0.25rem; padding: 0.5rem;">Authorization: Bearer dm_live_...</div>
+      </div>
+      <div>
+        <strong>Legacy Header:</strong>
+        <div class="code-inline" style="display: block; margin-top: 0.25rem; padding: 0.5rem;">X-API-Key: dm_live_...</div>
+      </div>
+      <div>
+        <strong>Query Parameter:</strong>
+        <div class="code-inline" style="display: block; margin-top: 0.25rem; padding: 0.5rem;">/v1/products/geolite-city/download?api_key=dm_live_...</div>
+      </div>
+      <p style="font-size: 0.8rem; color: var(--text-muted);">
+        All tokens passed in query parameters are automatically scrubbed and redacted from audit tables and server logs.
+      </p>
+    </div>
+  </div>
+</div>
+
+<!-- API Keys Table -->
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">Active & Revoked API Keys</span>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Prefix</th>
+          <th>Display Name</th>
+          <th>Products</th>
+          <th>Rate Limit</th>
+          <th>Last Used</th>
+          <th>Status</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Keys}}
+        <tr>
+          <td class="code-inline">{{.KeyPrefix}}...</td>
+          <td><strong>{{.DisplayName}}</strong></td>
+          <td><span class="code-inline">{{.AllowedProducts}}</span></td>
+          <td>{{.RateLimitPerMin}} req/min</td>
+          <td>
+            {{if .LastUsedAt}}
+              {{.LastUsedAt.Format "2006-01-02 15:04"}}
+              {{if .LastUsedIP}}<span style="color: var(--text-muted); font-size: 0.8rem;">({{.LastUsedIP}})</span>{{end}}
+            {{else}}
+              <span style="color: var(--text-muted);">Never</span>
+            {{end}}
+          </td>
+          <td>
+            {{if .IsRevoked}}
+              <span class="badge badge-danger">REVOKED</span>
+            {{else}}
+              <span class="badge badge-success">ACTIVE</span>
+            {{end}}
+          </td>
+          <td>
+            {{if not .IsRevoked}}
+              <form action="/admin/api-keys/revoke" method="POST" onsubmit="return confirm('Revoke API key {{.DisplayName}} immediately? All client requests using this key will fail.');">
+                <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                <input type="hidden" name="key_id" value="{{.ID}}">
+                <button type="submit" class="btn btn-danger btn-sm">Revoke</button>
+              </form>
+            {{else}}
+              <span style="color: var(--text-muted); font-size: 0.8rem;">Revoked</span>
+            {{end}}
+          </td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No API keys created yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{end}}

@@ -1,0 +1,100 @@
+{{define "content"}}
+<div style="margin-bottom: 2rem;">
+  <h1 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem;">Operational Dashboard</h1>
+  <p style="color: var(--text-muted); font-size: 0.95rem;">Real-time MaxMind MMDB product freshness and internal consumer distribution metrics.</p>
+</div>
+
+<!-- Product Freshness Grid -->
+<div class="grid grid-cols-3" style="margin-bottom: 2rem;">
+  {{range .Products}}
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">{{.DisplayName}}</span>
+      <span class="badge {{if .CurrentVersion}}badge-success{{else}}badge-danger{{end}}">
+        {{if .CurrentVersion}}CURRENT{{else}}MISSING{{end}}
+      </span>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.875rem; margin-bottom: 1.25rem;">
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Version</span>
+        <span class="code-inline">{{if .CurrentVersion}}{{.CurrentVersion.Version}}{{else}}None{{end}}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Released</span>
+        <span>{{if .CurrentVersion}}{{.CurrentVersion.ReleasedAt.Format "2006-01-02 15:04"}}{{else}}N/A{{end}}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Size</span>
+        <span>{{if .CurrentVersion}}{{.CurrentVersion.SizeBytes}} bytes{{else}}0{{end}}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">SHA-256</span>
+        <span class="code-inline" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          {{if .CurrentVersion}}{{.CurrentVersion.SHA256}}{{else}}N/A{{end}}
+        </span>
+      </div>
+    </div>
+    <form action="/admin/products/sync" method="POST">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="product_id" value="{{.ID}}">
+      <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Sync Now</button>
+    </form>
+  </div>
+  {{end}}
+</div>
+
+<!-- Metrics & SVG Sparkline Grid -->
+<div class="grid grid-cols-2" style="margin-bottom: 2rem;">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Download Activity (24 Hours)</span>
+      <span class="badge badge-neutral">{{.Stats.TotalRequests}} Total Requests</span>
+    </div>
+    <div style="margin-bottom: 1rem;">
+      <!-- Pure SVG Sparkline -->
+      <svg class="sparkline" viewBox="0 0 300 60">
+        <polyline points="{{.SVGPoints}}" />
+      </svg>
+    </div>
+    <div style="display: flex; justify-content: space-around; text-align: center; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+      <div>
+        <div style="font-size: 1.25rem; font-weight: 700;">{{.Stats.SuccessCount}}</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Successful Downloads</div>
+      </div>
+      <div>
+        <div style="font-size: 1.25rem; font-weight: 700;">{{.Stats.BytesTransferred}}</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Bytes Transferred</div>
+      </div>
+      <div>
+        <div style="font-size: 1.25rem; font-weight: 700;">{{.Stats.UniqueIPs}}</div>
+        <div style="font-size: 0.75rem; color: var(--text-muted);">Unique Client IPs</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Infrastructure & Storage</span>
+      <span class="badge badge-success">{{.StorageBackend}}</span>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 0.75rem; font-size: 0.9rem;">
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Active Storage Driver</span>
+        <span class="code-inline">{{.StorageBackend}}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Database WAL Mode</span>
+        <span class="badge badge-success">ENABLED</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Compliance Retention Window</span>
+        <span>30 Days (GeoLite EULA)</span>
+      </div>
+      <div style="display: flex; justify-content: space-between;">
+        <span style="color: var(--text-muted);">Audit Log Retention</span>
+        <span>90 Days</span>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
