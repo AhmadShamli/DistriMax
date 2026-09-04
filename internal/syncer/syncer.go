@@ -18,7 +18,7 @@ type Syncer struct {
 	storage         storage.StorageBackend
 	maxmind         *MaxMindClient
 	encryptionKey   []byte
-	onPublish       func(productID, version string)
+	onPublish       func(pv *db.ProductVersion)
 	locks           sync.Map // map[string]*sync.Mutex
 }
 
@@ -32,7 +32,7 @@ type SyncResult struct {
 	ErrorMessage     string
 }
 
-func NewSyncer(database *db.DB, store storage.StorageBackend, client *MaxMindClient, encryptionKey []byte, onPublish func(productID, version string)) *Syncer {
+func NewSyncer(database *db.DB, store storage.StorageBackend, client *MaxMindClient, encryptionKey []byte, onPublish func(pv *db.ProductVersion)) *Syncer {
 	return &Syncer{
 		db:            database,
 		storage:       store,
@@ -40,6 +40,14 @@ func NewSyncer(database *db.DB, store storage.StorageBackend, client *MaxMindCli
 		encryptionKey: encryptionKey,
 		onPublish:     onPublish,
 	}
+}
+
+// CheckCredentials checks MaxMind upstream credentials.
+func (s *Syncer) CheckCredentials(ctx context.Context, accountID, licenseKey string) error {
+	if s.maxmind == nil {
+		return fmt.Errorf("maxmind client not initialized")
+	}
+	return s.maxmind.CheckCredentials(ctx, accountID, licenseKey)
 }
 
 // SyncProduct synchronizes an enabled product from upstream MaxMind.
@@ -165,7 +173,7 @@ func (s *Syncer) SyncProduct(ctx context.Context, productID string, triggerType 
 
 	// 10. Cache invalidation callback
 	if s.onPublish != nil {
-		s.onPublish(productID, versionTag)
+		s.onPublish(pv)
 	}
 
 	durationMs := int(time.Since(start).Milliseconds())

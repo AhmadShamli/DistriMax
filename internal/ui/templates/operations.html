@@ -92,4 +92,59 @@
     </table>
   </div>
 </div>
+
+<!-- Webhook Deliveries Table -->
+<div class="card" style="margin-top: 2rem;">
+  <div class="card-header">
+    <span class="card-title">Recent Webhook Deliveries</span>
+  </div>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Event</th>
+          <th>Product / Version</th>
+          <th>Target URL</th>
+          <th>HTTP Status</th>
+          <th>Attempts</th>
+          <th>Duration</th>
+          <th>Error</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .WebhookDeliveries}}
+        <tr>
+          <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+          <td><span class="badge badge-neutral">{{.EventType}}</span></td>
+          <td>
+            {{if .ProductID}}
+              <span class="code-inline">{{.ProductID}}</span>{{if .Version}}@{{.Version}}{{end}}
+            {{else}}
+              -
+            {{end}}
+          </td>
+          <td class="code-inline" style="max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{.TargetURL}}</td>
+          <td>
+            {{if and (ge .StatusCode 200) (lt .StatusCode 300)}}
+              <span class="badge badge-success">HTTP {{.StatusCode}}</span>
+            {{else if gt .StatusCode 0}}
+              <span class="badge badge-danger">HTTP {{.StatusCode}}</span>
+            {{else}}
+              <span class="badge badge-danger">FAILED</span>
+            {{end}}
+          </td>
+          <td>{{.AttemptCount}}</td>
+          <td>{{.DurationMs}} ms</td>
+          <td style="color: var(--color-danger); font-size: 0.8rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{.ErrorMessage}}</td>
+        </tr>
+        {{else}}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No webhook deliveries recorded yet.</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</div>
 {{end}}

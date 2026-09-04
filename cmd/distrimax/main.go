@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/AhmadShamli/DistriMax/internal/api"
+	"github.com/AhmadShamli/DistriMax/internal/auth"
 	"github.com/AhmadShamli/DistriMax/internal/cache"
 	"github.com/AhmadShamli/DistriMax/internal/config"
 	"github.com/AhmadShamli/DistriMax/internal/db"
@@ -86,9 +88,43 @@ func main() {
 
 	// 5. Upstream MaxMind Client & Sync Engine
 	maxmindClient := syncer.NewMaxMindClient("", 10*time.Minute)
-	syncEngine := syncer.NewSyncer(database, store, maxmindClient, cfg.SettingsEncryptionKey, func(productID, version string) {
-		log.Printf("[DistriMax] Invalidating manifest cache for product %s (version: %s)", productID, version)
-		manifestCache.Invalidate(productID)
+	syncEngine := syncer.NewSyncer(database, store, maxmindClient, cfg.SettingsEncryptionKey, func(pv *db.ProductVersion) {
+		log.Printf("[DistriMax] Invalidating manifest cache for product %s (version: %s)", pv.ProductID, pv.Version)
+		manifestCache.Invalidate(pv.ProductID)
+
+		// Dispatch Webhook notification asynchronously
+		go func(version *db.ProductVersion) {
+			webhookURL, _, err := database.GetSetting(context.Background(), "webhook_url")
+			if err != nil || webhookURL == "" {
+				return
+			}
+			encSecret, isEnc, err := database.GetSetting(context.Background(), "webhook_hmac_secret")
+			hmacSecret := encSecret
+			if err == nil && isEnc && len(cfg.SettingsEncryptionKey) == 32 {
+				if dec, err := auth.Decrypt(encSecret, cfg.SettingsEncryptionKey); err == nil {
+					hmacSecret = string(dec)
+				}
+			}
+
+			event := &workers.WebhookEvent{
+				Event:        "product.published",
+				Product:      version.ProductID,
+				Version:      version.Version,
+				ReleasedAt:   version.ReleasedAt,
+				SHA256:       version.SHA256,
+				SizeBytes:    version.SizeBytes,
+				DownloadPath: fmt.Sprintf("/v1/products/%s/download", version.ProductID),
+			}
+
+			ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancelTimeout()
+
+			if err := workers.SendWebhook(ctxTimeout, database, webhookURL, hmacSecret, event); err != nil {
+				log.Printf("[DistriMax] Webhook delivery failed for %s (%s): %v", version.ProductID, version.Version, err)
+			} else {
+				log.Printf("[DistriMax] Webhook delivered successfully for %s (%s)", version.ProductID, version.Version)
+			}
+		}(pv)
 	})
 
 	// 6. Background Scheduler

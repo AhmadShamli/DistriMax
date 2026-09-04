@@ -512,6 +512,7 @@ func (u *AdminUI) handleOperations(w http.ResponseWriter, r *http.Request) {
 	// Query recent sync runs
 	rows, err := u.db.QueryContext(r.Context(), "SELECT id, product_id, status, trigger_type, version_discovered, duration_ms, error_message, created_at FROM sync_runs ORDER BY created_at DESC LIMIT 10")
 	type syncView struct {
+		ID                string
 		ProductID         string
 		Status            string
 		TriggerType       string
@@ -526,7 +527,7 @@ func (u *AdminUI) handleOperations(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var s syncView
 			var vDisc, errMsg sql.NullString
-			if err := rows.Scan(&s.ProductID, &s.ProductID, &s.Status, &s.TriggerType, &vDisc, &s.DurationMs, &errMsg, &s.CreatedAt); err == nil {
+			if err := rows.Scan(&s.ID, &s.ProductID, &s.Status, &s.TriggerType, &vDisc, &s.DurationMs, &errMsg, &s.CreatedAt); err == nil {
 				s.VersionDiscovered = vDisc.String
 				s.ErrorMessage = errMsg.String
 				runs = append(runs, s)
@@ -534,10 +535,43 @@ func (u *AdminUI) handleOperations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Query recent webhook deliveries
+	whRows, err := u.db.QueryContext(r.Context(), "SELECT id, event_type, product_id, version, target_url, status_code, attempt_count, duration_ms, error_message, created_at FROM webhook_deliveries ORDER BY created_at DESC LIMIT 10")
+	type webhookView struct {
+		ID           string
+		EventType    string
+		ProductID    string
+		Version      string
+		TargetURL    string
+		StatusCode   int
+		AttemptCount int
+		DurationMs   int
+		ErrorMessage string
+		CreatedAt    time.Time
+	}
+	var deliveries []webhookView
+	if err == nil {
+		defer whRows.Close()
+		for whRows.Next() {
+			var d webhookView
+			var pID, ver, errMsg sql.NullString
+			var statusCode, duration sql.NullInt64
+			if err := whRows.Scan(&d.ID, &d.EventType, &pID, &ver, &d.TargetURL, &statusCode, &d.AttemptCount, &duration, &errMsg, &d.CreatedAt); err == nil {
+				d.ProductID = pID.String
+				d.Version = ver.String
+				d.StatusCode = int(statusCode.Int64)
+				d.DurationMs = int(duration.Int64)
+				d.ErrorMessage = errMsg.String
+				deliveries = append(deliveries, d)
+			}
+		}
+	}
+
 	data := map[string]interface{}{
-		"BaseViewData": base,
-		"SyncRuns":     runs,
-		"CSRFToken":    base.CSRFToken,
+		"BaseViewData":      base,
+		"SyncRuns":          runs,
+		"WebhookDeliveries": deliveries,
+		"CSRFToken":         base.CSRFToken,
 	}
 	_ = u.parsedTemplates["operations"].Execute(w, data)
 }
@@ -678,15 +712,120 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 
 func (u *AdminUI) handleTestMaxMind(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	accountID, _, _ := u.db.GetSetting(r.Context(), "maxmind_account_id")
+	encLicenseKey, isEnc, _ := u.db.GetSetting(r.Context(), "maxmind_license_key")
+	if accountID == "" || encLicenseKey == "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "MaxMind account ID or license key is not configured"})
+		return
+	}
+
+	if u.syncer == nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Syncer engine not initialized"})
+		return
+	}
+
+	licenseKey := encLicenseKey
+	if isEnc && len(u.cfg.SettingsEncryptionKey) == 32 {
+		dec, err := auth.Decrypt(encLicenseKey, u.cfg.SettingsEncryptionKey)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Failed to decrypt license key"})
+			return
+		}
+		licenseKey = string(dec)
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := u.syncer.CheckCredentials(ctx, accountID, licenseKey); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+		return
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (u *AdminUI) handleTestS3(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	endpoint, _, _ := u.db.GetSetting(r.Context(), "s3_endpoint")
+	bucket, _, _ := u.db.GetSetting(r.Context(), "s3_bucket")
+	region, _, _ := u.db.GetSetting(r.Context(), "s3_region")
+	ak, _, _ := u.db.GetSetting(r.Context(), "s3_access_key_id")
+	encSK, isEnc, _ := u.db.GetSetting(r.Context(), "s3_secret_access_key")
+	forcePath, _, _ := u.db.GetSetting(r.Context(), "s3_force_path_style")
+
+	if bucket == "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "S3 bucket name is not configured"})
+		return
+	}
+
+	sk := encSK
+	if isEnc && len(u.cfg.SettingsEncryptionKey) == 32 && encSK != "" {
+		if dec, err := auth.Decrypt(encSK, u.cfg.SettingsEncryptionKey); err == nil {
+			sk = string(dec)
+		}
+	}
+
+	s3Store, err := storage.NewS3Storage(storage.S3Config{
+		Endpoint:        endpoint,
+		Bucket:          bucket,
+		Region:          region,
+		AccessKeyID:     ak,
+		SecretAccessKey: sk,
+		ForcePathStyle:  forcePath == "true",
+	})
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": fmt.Sprintf("Invalid S3 configuration: %v", err)})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := s3Store.CheckBucket(ctx); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+		return
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (u *AdminUI) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+
+	webhookURL, _, _ := u.db.GetSetting(r.Context(), "webhook_url")
+	if webhookURL == "" {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Webhook target URL is not configured"})
+		return
+	}
+
+	encSecret, isEnc, _ := u.db.GetSetting(r.Context(), "webhook_hmac_secret")
+	hmacSecret := encSecret
+	if isEnc && len(u.cfg.SettingsEncryptionKey) == 32 && encSecret != "" {
+		if dec, err := auth.Decrypt(encSecret, u.cfg.SettingsEncryptionKey); err == nil {
+			hmacSecret = string(dec)
+		}
+	}
+
+	event := &workers.WebhookEvent{
+		Event:        "system.test_ping",
+		Product:      "test",
+		Version:      "ping",
+		ReleasedAt:   time.Now().UTC(),
+		SHA256:       "0000000000000000000000000000000000000000000000000000000000000000",
+		SizeBytes:    0,
+		DownloadPath: "/v1/products/test/manifest",
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	if err := workers.SendWebhook(ctx, u.db, webhookURL, hmacSecret, event); err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "error", "error": err.Error()})
+		return
+	}
+
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "status_code": 200})
 }

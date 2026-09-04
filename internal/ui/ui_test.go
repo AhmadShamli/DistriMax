@@ -179,3 +179,77 @@ func TestAdminUserGuard(t *testing.T) {
 		t.Errorf("expected last admin error in redirect Location, got %s", rr.Header().Get("Location"))
 	}
 }
+
+func TestLiveTestHandlers(t *testing.T) {
+	_, mux, database, cfg := setupTestUI(t)
+	defer database.Close()
+	ctx := context.Background()
+
+	cfg.SettingsEncryptionKey = []byte("12345678901234567890123456789012") // 32 bytes
+
+	hash, _ := auth.HashPassword("AdminPass123!")
+	u, _ := database.CreateUser(ctx, "sysadmin", hash)
+	_ = database.SetSetting(ctx, "setup_completed", "true", false, "test")
+
+	sessID, _ := auth.GenerateSessionToken()
+	_ = database.CreateSession(ctx, sessID, u.ID, time.Now().UTC().Add(1*time.Hour))
+	sessionCookie := &http.Cookie{Name: "distrimax_session", Value: sessID}
+
+	// 1. Test Webhook with mock server
+	receivedWebhook := false
+	webhookServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedWebhook = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer webhookServer.Close()
+
+	_ = database.SetSetting(ctx, "webhook_url", webhookServer.URL, false, "test")
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/settings/test-webhook", nil)
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"status":"ok"`) {
+		t.Errorf("expected status ok in webhook test response, got %s", rr.Body.String())
+	}
+	if !receivedWebhook {
+		t.Error("expected webhook server to receive ping")
+	}
+
+	// 2. Test S3 missing bucket
+	req = httptest.NewRequest(http.MethodPost, "/admin/settings/test-s3", nil)
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), "S3 bucket name is not configured") {
+		t.Errorf("expected missing bucket error, got %s", rr.Body.String())
+	}
+
+	// 3. Test MaxMind missing credentials
+	req = httptest.NewRequest(http.MethodPost, "/admin/settings/test-maxmind", nil)
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), "MaxMind account ID or license key is not configured") {
+		t.Errorf("expected missing credentials error, got %s", rr.Body.String())
+	}
+
+	// 4. Test Operations page with WebhookDeliveries
+	req = httptest.NewRequest(http.MethodGet, "/admin/operations", nil)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/operations, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Recent Webhook Deliveries") {
+		t.Errorf("expected operations page to render Webhook Deliveries table")
+	}
+}

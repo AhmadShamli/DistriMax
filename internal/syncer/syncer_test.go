@@ -197,7 +197,7 @@ func TestFullSyncOrchestration(t *testing.T) {
 	// 4. Create Syncer
 	maxmindClient := NewMaxMindClient(server.URL, 5*time.Second)
 	publishedCalled := false
-	syncer := NewSyncer(database, store, maxmindClient, nil, func(p, v string) {
+	syncer := NewSyncer(database, store, maxmindClient, nil, func(pv *db.ProductVersion) {
 		publishedCalled = true
 	})
 

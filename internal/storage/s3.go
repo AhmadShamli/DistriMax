@@ -160,6 +160,17 @@ func (s *S3Storage) VerifyArtifact(ctx context.Context, storagePath string, expe
 	return nil
 }
 
+// CheckBucket verifies connectivity to the configured S3 bucket via HeadBucket.
+func (s *S3Storage) CheckBucket(ctx context.Context) error {
+	_, err := s.client.HeadBucket(ctx, &s3.HeadBucketInput{
+		Bucket: aws.String(s.bucket),
+	})
+	if err != nil {
+		return fmt.Errorf("s3 bucket check failed: %w", err)
+	}
+	return nil
+}
+
 type seekableBuffer struct {
 	*bytes.Reader
 }
