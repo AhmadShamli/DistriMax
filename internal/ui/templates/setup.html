@@ -36,8 +36,58 @@
         <label>Confirm Password</label>
         <input type="password" name="confirm_password" required minlength="8">
       </div>
+
+      <div style="margin: 1.5rem 0 1rem; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+        <span style="font-weight: 600; font-size: 0.95rem; color: var(--text-color);">Storage Backend Driver</span>
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Select where MMDB artifact files will be stored. Defaults to local persistent filesystem.</p>
+      </div>
+
+      <div class="form-group">
+        <label for="storageBackendSelect">Storage Driver</label>
+        <select name="storage_backend" id="storageBackendSelect" onchange="toggleS3Fields()">
+          <option value="filesystem" selected>Local Persistent Filesystem (/var/lib/distrimax/artifacts)</option>
+          <option value="s3">S3-Compatible Object Storage (MinIO, AWS S3, Cloudflare R2)</option>
+        </select>
+      </div>
+
+      <!-- S3 Configuration (Hidden when filesystem is selected) -->
+      <div id="s3FieldsGroup" style="display: none; background: var(--bg-surface-secondary); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-color); margin-bottom: 1rem;">
+        <div class="form-group">
+          <label>S3 Endpoint URL (leave empty for AWS S3)</label>
+          <input type="text" name="s3_endpoint" placeholder="e.g. https://minio.internal:9000">
+        </div>
+        <div class="form-group">
+          <label>S3 Bucket Name</label>
+          <input type="text" name="s3_bucket" placeholder="e.g. distrimax-artifacts">
+        </div>
+        <div class="form-group">
+          <label>S3 Region</label>
+          <input type="text" name="s3_region" value="us-east-1" placeholder="us-east-1">
+        </div>
+        <div class="form-group">
+          <label>S3 Access Key ID</label>
+          <input type="text" name="s3_access_key_id" placeholder="Access Key ID">
+        </div>
+        <div class="form-group">
+          <label>S3 Secret Access Key</label>
+          <input type="password" name="s3_secret_access_key" placeholder="Secret Access Key">
+        </div>
+        <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem;">
+          <input type="checkbox" name="s3_force_path_style" value="true" id="setupPathStyle">
+          <label for="setupPathStyle" style="margin-bottom: 0;">Force Path Style (Required for MinIO)</label>
+        </div>
+      </div>
+
       <button type="submit" class="btn btn-primary" style="width: 100%; padding: 0.75rem; margin-top: 0.5rem;">Initialize DistriMax</button>
     </form>
   </div>
+
+  <script>
+  function toggleS3Fields() {
+    const sel = document.getElementById('storageBackendSelect');
+    const group = document.getElementById('s3FieldsGroup');
+    group.style.display = (sel.value === 's3') ? 'block' : 'none';
+  }
+  </script>
 </body>
 </html>

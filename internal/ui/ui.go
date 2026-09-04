@@ -33,15 +33,22 @@ type AdminUI struct {
 	db              *db.DB
 	cfg             *config.Config
 	storage         storage.StorageBackend
+	storageManager  *storage.StorageManager
 	syncer          *syncer.Syncer
 	parsedTemplates map[string]*template.Template
 }
 
 func NewAdminUI(database *db.DB, cfg *config.Config, store storage.StorageBackend, syncEngine *syncer.Syncer) (*AdminUI, error) {
+	var sm *storage.StorageManager
+	if m, ok := store.(*storage.StorageManager); ok {
+		sm = m
+	}
+
 	ui := &AdminUI{
 		db:              database,
 		cfg:             cfg,
 		storage:         store,
+		storageManager:  sm,
 		syncer:          syncEngine,
 		parsedTemplates: make(map[string]*template.Template),
 	}
@@ -117,6 +124,54 @@ func (u *AdminUI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/settings/test-maxmind", u.requireAuth(u.handleTestMaxMind))
 	mux.HandleFunc("POST /admin/settings/test-s3", u.requireAuth(u.handleTestS3))
 	mux.HandleFunc("POST /admin/settings/test-webhook", u.requireAuth(u.handleTestWebhook))
+}
+
+// ReloadStorage synchronizes the active storage driver in StorageManager with the database settings.
+func (u *AdminUI) ReloadStorage(ctx context.Context) error {
+	if u.storageManager == nil {
+		return nil
+	}
+
+	backend, _, _ := u.db.GetSetting(ctx, "storage_backend")
+	if backend != "s3" {
+		backend = "filesystem"
+	}
+
+	if backend == "s3" {
+		endpoint, _, _ := u.db.GetSetting(ctx, "s3_endpoint")
+		bucket, _, _ := u.db.GetSetting(ctx, "s3_bucket")
+		region, _, _ := u.db.GetSetting(ctx, "s3_region")
+		ak, _, _ := u.db.GetSetting(ctx, "s3_access_key_id")
+		encSK, isEnc, _ := u.db.GetSetting(ctx, "s3_secret_access_key")
+		forcePath, _, _ := u.db.GetSetting(ctx, "s3_force_path_style")
+
+		sk := encSK
+		if isEnc && len(u.cfg.SettingsEncryptionKey) == 32 && encSK != "" {
+			if dec, err := auth.Decrypt(encSK, u.cfg.SettingsEncryptionKey); err == nil {
+				sk = string(dec)
+			}
+		}
+
+		if bucket != "" {
+			s3Store, err := storage.NewS3Storage(storage.S3Config{
+				Endpoint:        endpoint,
+				Bucket:          bucket,
+				Region:          region,
+				AccessKeyID:     ak,
+				SecretAccessKey: sk,
+				ForcePathStyle:  forcePath == "true",
+			})
+			if err == nil {
+				u.storageManager.SetS3Storage(s3Store)
+				_ = u.storageManager.SetActiveDriver("s3")
+				return nil
+			}
+		}
+	}
+
+	// Default fallback to filesystem
+	_ = u.storageManager.SetActiveDriver("filesystem")
+	return nil
 }
 
 // Session & CSRF Middleware
@@ -210,18 +265,65 @@ func (u *AdminUI) handleSetupPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	storageBackend := strings.ToLower(strings.TrimSpace(r.FormValue("storage_backend")))
+	if storageBackend != "s3" {
+		storageBackend = "filesystem"
+	}
+
+	s3Endpoint := strings.TrimSpace(r.FormValue("s3_endpoint"))
+	s3Bucket := strings.TrimSpace(r.FormValue("s3_bucket"))
+	s3Region := strings.TrimSpace(r.FormValue("s3_region"))
+	if s3Region == "" {
+		s3Region = "us-east-1"
+	}
+	s3AccessKey := strings.TrimSpace(r.FormValue("s3_access_key_id"))
+	s3SecretKey := strings.TrimSpace(r.FormValue("s3_secret_access_key"))
+	s3ForcePath := "false"
+	if r.FormValue("s3_force_path_style") == "true" {
+		s3ForcePath = "true"
+	}
+
+	if storageBackend == "s3" && s3Bucket == "" {
+		_ = u.parsedTemplates["setup"].Execute(w, map[string]string{"Error": "S3 bucket name is required when selecting S3 storage driver"})
+		return
+	}
+
 	err = u.db.WithTx(r.Context(), func(tx *sql.Tx) error {
 		_, err := tx.Exec("INSERT INTO users (id, username, password_hash, is_disabled, created_at, updated_at) VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)", "admin-1", username, hash)
 		if err != nil {
 			return err
 		}
 		_, err = tx.Exec("UPDATE settings SET value = 'true', updated_at = CURRENT_TIMESTAMP WHERE key = 'setup_completed'")
-		return err
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = 'storage_backend'", storageBackend)
+		if err != nil {
+			return err
+		}
+
+		if storageBackend == "s3" {
+			_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_endpoint', ?, 0, 'setup', CURRENT_TIMESTAMP)", s3Endpoint)
+			_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_bucket', ?, 0, 'setup', CURRENT_TIMESTAMP)", s3Bucket)
+			_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_region', ?, 0, 'setup', CURRENT_TIMESTAMP)", s3Region)
+			_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_access_key_id', ?, 0, 'setup', CURRENT_TIMESTAMP)", s3AccessKey)
+			_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_force_path_style', ?, 0, 'setup', CURRENT_TIMESTAMP)", s3ForcePath)
+
+			if s3SecretKey != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
+				enc, err := auth.Encrypt([]byte(s3SecretKey), u.cfg.SettingsEncryptionKey)
+				if err == nil {
+					_, _ = tx.Exec("INSERT OR REPLACE INTO settings (key, value, is_encrypted, updated_by, updated_at) VALUES ('s3_secret_access_key', ?, 1, 'setup', CURRENT_TIMESTAMP)", enc)
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		_ = u.parsedTemplates["setup"].Execute(w, map[string]string{"Error": "Failed to initialize database: " + err.Error()})
 		return
 	}
+
+	_ = u.ReloadStorage(r.Context())
 
 	// Create session and log in immediately
 	sessID, _ := auth.GenerateSessionToken()
@@ -678,8 +780,8 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	keys := []string{
-		"maxmind_account_id", "storage_backend", "s3_endpoint", "s3_bucket",
-		"s3_region", "s3_access_key_id", "s3_force_path_style", "sync_schedule_cron",
+		"maxmind_account_id", "s3_endpoint", "s3_bucket",
+		"s3_region", "s3_access_key_id", "sync_schedule_cron",
 		"staleness_threshold_days", "artifact_retention_days", "audit_retention_days",
 		"webhook_url",
 	}
@@ -690,6 +792,20 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 			_ = u.db.SetSetting(r.Context(), k, val, false, updatedBy)
 		}
 	}
+
+	// Storage Driver (defaults to filesystem)
+	storageBackend := strings.ToLower(strings.TrimSpace(r.FormValue("storage_backend")))
+	if storageBackend != "s3" {
+		storageBackend = "filesystem"
+	}
+	_ = u.db.SetSetting(r.Context(), "storage_backend", storageBackend, false, updatedBy)
+
+	// S3 Force Path Style
+	forcePath := "false"
+	if r.FormValue("s3_force_path_style") == "true" {
+		forcePath = "true"
+	}
+	_ = u.db.SetSetting(r.Context(), "s3_force_path_style", forcePath, false, updatedBy)
 
 	// Encrypted Secrets
 	if secret := r.FormValue("maxmind_license_key"); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
@@ -706,6 +822,9 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 		enc, _ := auth.Encrypt([]byte(secret), u.cfg.SettingsEncryptionKey)
 		_ = u.db.SetSetting(r.Context(), "webhook_hmac_secret", enc, true, updatedBy)
 	}
+
+	// Hot-reload storage driver
+	_ = u.ReloadStorage(r.Context())
 
 	http.Redirect(w, r, "/admin/settings?flash_success=Settings+saved+successfully", http.StatusFound)
 }

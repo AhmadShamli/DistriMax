@@ -26,7 +26,8 @@ func setupTestUI(t *testing.T) (*AdminUI, *http.ServeMux, *db.DB, *config.Config
 	}
 	_ = db.RunMigrations(ctx, database.DB)
 
-	store, _ := storage.NewFilesystemStorage(filepath.Join(tmpDir, "artifacts"), filepath.Join(tmpDir, "staging"))
+	fsStore, _ := storage.NewFilesystemStorage(filepath.Join(tmpDir, "artifacts"), filepath.Join(tmpDir, "staging"))
+	store := storage.NewStorageManager(fsStore)
 	cfg := &config.Config{
 		BootstrapSecret: "initial-bootstrap-token",
 		StorageBackend:  "filesystem",
@@ -251,5 +252,95 @@ func TestLiveTestHandlers(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "Recent Webhook Deliveries") {
 		t.Errorf("expected operations page to render Webhook Deliveries table")
+	}
+}
+
+func TestStorageDriverSetupAndSwitching(t *testing.T) {
+	adminUI, mux, database, cfg := setupTestUI(t)
+	defer database.Close()
+	ctx := context.Background()
+
+	cfg.SettingsEncryptionKey = []byte("12345678901234567890123456789012") // 32 bytes
+
+	// 1. First-time setup with default storage driver (empty/filesystem)
+	form := url.Values{
+		"bootstrap_secret": {"initial-bootstrap-token"},
+		"username":         {"admin"},
+		"password":         {"SuperSecret123!"},
+		"confirm_password": {"SuperSecret123!"},
+		"storage_backend":  {"filesystem"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/setup", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after setup, got %d", rr.Code)
+	}
+
+	backend, _, _ := database.GetSetting(ctx, "storage_backend")
+	if backend != "filesystem" {
+		t.Errorf("expected storage_backend to be filesystem, got %s", backend)
+	}
+	if adminUI.storageManager.ActiveDriver() != "filesystem" {
+		t.Errorf("expected storage manager driver to be filesystem, got %s", adminUI.storageManager.ActiveDriver())
+	}
+
+	// 2. Obtain session cookie for admin
+	var sessionCookie *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == "distrimax_session" {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected distrimax_session cookie")
+	}
+
+	// 3. Switch to S3 storage driver in Settings
+	settingsForm := url.Values{
+		"csrf_token":            {sessionCookie.Value},
+		"storage_backend":       {"s3"},
+		"s3_endpoint":           {"http://127.0.0.1:9000"},
+		"s3_bucket":             {"test-bucket"},
+		"s3_region":             {"us-east-1"},
+		"s3_access_key_id":      {"minioadmin"},
+		"s3_secret_access_key":  {"minioadmin"},
+		"s3_force_path_style":   {"true"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/settings/save", strings.NewReader(settingsForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Fatalf("expected 302 redirect after settings save, got %d", rr.Code)
+	}
+
+	backend, _, _ = database.GetSetting(ctx, "storage_backend")
+	if backend != "s3" {
+		t.Errorf("expected storage_backend to be s3, got %s", backend)
+	}
+	if adminUI.storageManager.ActiveDriver() != "s3" {
+		t.Errorf("expected storage manager active driver to be s3, got %s", adminUI.storageManager.ActiveDriver())
+	}
+
+	// 4. Switch back to filesystem
+	settingsForm.Set("storage_backend", "filesystem")
+	req = httptest.NewRequest(http.MethodPost, "/admin/settings/save", strings.NewReader(settingsForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	backend, _, _ = database.GetSetting(ctx, "storage_backend")
+	if backend != "filesystem" {
+		t.Errorf("expected storage_backend to be filesystem, got %s", backend)
+	}
+	if adminUI.storageManager.ActiveDriver() != "filesystem" {
+		t.Errorf("expected storage manager active driver to be filesystem, got %s", adminUI.storageManager.ActiveDriver())
 	}
 }

@@ -50,38 +50,13 @@ func main() {
 	}
 	log.Println("[DistriMax] Database schema verified and up-to-date")
 
-	// 3. Initialize Storage Backend
-	var store storage.StorageBackend
-	if cfg.StorageBackend == "s3" {
-		endpoint, _, _ := database.GetSetting(ctx, "s3_endpoint")
-		bucket, _, _ := database.GetSetting(ctx, "s3_bucket")
-		region, _, _ := database.GetSetting(ctx, "s3_region")
-		ak, _, _ := database.GetSetting(ctx, "s3_access_key_id")
-		sk, _, _ := database.GetSetting(ctx, "s3_secret_access_key")
-		forcePath, _, _ := database.GetSetting(ctx, "s3_force_path_style")
-
-		s3Store, err := storage.NewS3Storage(storage.S3Config{
-			Endpoint:        endpoint,
-			Bucket:          bucket,
-			Region:          region,
-			AccessKeyID:     ak,
-			SecretAccessKey: sk,
-			ForcePathStyle:  forcePath == "true",
-		})
-		if err != nil {
-			log.Printf("[DistriMax] Warning: failed to init S3 storage (%v); falling back to filesystem", err)
-			store, _ = storage.NewFilesystemStorage(cfg.ArtifactRoot, cfg.StagingRoot)
-		} else {
-			store = s3Store
-			log.Println("[DistriMax] S3-compatible storage backend initialized")
-		}
-	} else {
-		store, err = storage.NewFilesystemStorage(cfg.ArtifactRoot, cfg.StagingRoot)
-		if err != nil {
-			log.Fatalf("[DistriMax] Failed to init filesystem storage: %v", err)
-		}
-		log.Println("[DistriMax] Local filesystem storage backend initialized")
+	// 3. Initialize Storage Backend (defaults to filesystem; managed via Admin UI)
+	fsStore, err := storage.NewFilesystemStorage(cfg.ArtifactRoot, cfg.StagingRoot)
+	if err != nil {
+		log.Fatalf("[DistriMax] Failed to init filesystem storage: %v", err)
 	}
+	store := storage.NewStorageManager(fsStore)
+	log.Println("[DistriMax] Storage manager initialized with local filesystem backend")
 
 	// 4. In-Memory Manifest Cache
 	manifestCache := cache.NewManifestCache(60 * time.Second)
@@ -147,6 +122,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("[DistriMax] Failed to initialize Admin UI: %v", err)
 	}
+	_ = adminUI.ReloadStorage(ctx)
+	log.Printf("[DistriMax] Active storage driver: %s", store.ActiveDriver())
 	adminUI.RegisterRoutes(mux)
 
 	// Root redirect
