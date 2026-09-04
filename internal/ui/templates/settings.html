@@ -4,24 +4,37 @@
   <p style="color: var(--text-muted); font-size: 0.95rem;">Manage upstream MaxMind credentials, storage backends, schedules, and webhooks. Sensitive credentials are AES-256-GCM encrypted in the SQLite database.</p>
 </div>
 
-<form action="/admin/settings/save" method="POST">
+<form action="/admin/settings/save" method="POST" autocomplete="off">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <!-- Hidden dummy inputs to prevent browser autofill of saved admin login credentials -->
+  <input type="text" style="display:none" aria-hidden="true" tabindex="-1" autocomplete="off">
+  <input type="password" style="display:none" aria-hidden="true" tabindex="-1" autocomplete="off">
 
   <!-- 1. MaxMind Upstream -->
   <div class="card" style="margin-bottom: 2rem;">
     <div class="card-header">
-      <span class="card-title">MaxMind Upstream Credentials</span>
+      <div style="display: flex; align-items: center; gap: 0.75rem;">
+        <span class="card-title">MaxMind Upstream Credentials</span>
+        <span class="badge {{if .MaxMindConfigured}}badge-success{{else}}badge-danger{{end}}">
+          {{if .MaxMindConfigured}}CONFIGURED{{else}}NOT CONFIGURED{{end}}
+        </span>
+      </div>
       <button type="button" class="btn btn-secondary btn-sm" onclick="testMaxMind()">Test MaxMind Connection</button>
     </div>
     <div id="maxmind-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    {{if not .MaxMindConfigured}}
+      <div style="background: rgba(245, 158, 11, 0.1); border-left: 3px solid var(--color-warning); padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.85rem; border-radius: 0 0.375rem 0.375rem 0;">
+        ⚠️ MaxMind credentials are required to download GeoLite2 databases. Generate a <strong>License Key</strong> from your account at <a href="https://www.maxmind.com" target="_blank" style="color: var(--accent-blue); text-decoration: underline;">maxmind.com</a> and save it below.
+      </div>
+    {{end}}
     <div class="grid grid-cols-2">
       <div class="form-group">
         <label>Account ID</label>
-        <input type="text" name="maxmind_account_id" value="{{.Settings.maxmind_account_id}}" placeholder="Your MaxMind Account ID">
+        <input type="text" name="maxmind_account_id" value="{{.Settings.maxmind_account_id}}" placeholder="Your MaxMind Account ID" autocomplete="off" autocapitalize="none" spellcheck="false">
       </div>
       <div class="form-group">
         <label>License Key (Encrypted at rest)</label>
-        <input type="password" name="maxmind_license_key" placeholder="Enter new license key to update">
+        <input type="password" name="maxmind_license_key" placeholder="{{if .HasLicenseKey}}•••••••••••••••• (Leave blank to keep existing){{else}}Enter your MaxMind license key{{end}}" autocomplete="new-password">
       </div>
     </div>
   </div>
@@ -30,40 +43,58 @@
   <div class="card" style="margin-bottom: 2rem;">
     <div class="card-header">
       <span class="card-title">Storage Backend</span>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="testS3()">Test S3 Connection</button>
+      <button type="button" class="btn btn-secondary btn-sm" id="storageTestBtn" onclick="testCurrentStorage()">
+        {{if eq .Settings.storage_backend "s3"}}Test S3 Connection{{else}}Test Filesystem Permissions{{end}}
+      </button>
     </div>
-    <div id="s3-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    <div id="storage-test-result" style="margin-bottom: 1rem; display: none;"></div>
+    <div id="s3-test-result" style="display: none;"></div>
     <div class="form-group">
       <label>Active Backend Driver</label>
-      <select name="storage_backend" id="storageBackendSelect">
-        <option value="filesystem" {{if eq .Settings.storage_backend "filesystem"}}selected{{end}}>Local Persistent Filesystem (/var/lib/distrimax/artifacts)</option>
+      <select name="storage_backend" id="storageBackendSelect" onchange="toggleStorageFields()">
+        <option value="filesystem" {{if ne .Settings.storage_backend "s3"}}selected{{end}}>Local Persistent Filesystem</option>
         <option value="s3" {{if eq .Settings.storage_backend "s3"}}selected{{end}}>S3-Compatible Object Storage (MinIO / AWS S3 / Cloudflare R2)</option>
       </select>
     </div>
-    <div class="grid grid-cols-2">
-      <div class="form-group">
-        <label>S3 Endpoint URL (leave empty for AWS S3)</label>
-        <input type="text" name="s3_endpoint" value="{{.Settings.s3_endpoint}}" placeholder="e.g. https://minio.internal:9000">
+
+    <!-- Local Filesystem Section (shown when filesystem is selected) -->
+    <div id="fs-storage-section" style="{{if eq .Settings.storage_backend "s3"}}display: none;{{end}} margin-top: 1rem;">
+      <div style="background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: 0.375rem; padding: 1rem;">
+        <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.875rem;">
+          <div><strong style="color: var(--text-primary);">Storage Directory:</strong> <span class="code-inline">{{.ArtifactRoot}}</span></div>
+          <div><strong style="color: var(--text-primary);">Staging Directory:</strong> <span class="code-inline">{{.StagingRoot}}</span></div>
+          <p style="color: var(--text-muted); margin: 0.25rem 0 0 0;">Artifacts are stored directly on the local persistent disk. Directory traversal protection, atomic rename staging, and POSIX permissions are actively enforced.</p>
+        </div>
       </div>
-      <div class="form-group">
-        <label>S3 Bucket Name</label>
-        <input type="text" name="s3_bucket" value="{{.Settings.s3_bucket}}" placeholder="e.g. distrimax-artifacts">
-      </div>
-      <div class="form-group">
-        <label>S3 Region</label>
-        <input type="text" name="s3_region" value="{{.Settings.s3_region}}" placeholder="e.g. us-east-1">
-      </div>
-      <div class="form-group">
-        <label>S3 Access Key ID</label>
-        <input type="text" name="s3_access_key_id" value="{{.Settings.s3_access_key_id}}">
-      </div>
-      <div class="form-group">
-        <label>S3 Secret Access Key (Encrypted at rest)</label>
-        <input type="password" name="s3_secret_access_key" placeholder="Enter new secret key to update">
-      </div>
-      <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 1.75rem;">
-        <input type="checkbox" name="s3_force_path_style" value="true" {{if eq .Settings.s3_force_path_style "true"}}checked{{end}} id="pathStyleCheck">
-        <label for="pathStyleCheck" style="margin-bottom: 0;">Force Path Style (Required for MinIO)</label>
+    </div>
+
+    <!-- S3 Object Storage Section (shown when S3 is selected) -->
+    <div id="s3-storage-section" style="{{if ne .Settings.storage_backend "s3"}}display: none;{{end}} margin-top: 1rem;">
+      <div class="grid grid-cols-2">
+        <div class="form-group">
+          <label>S3 Endpoint URL (leave empty for AWS S3)</label>
+          <input type="text" name="s3_endpoint" value="{{.Settings.s3_endpoint}}" placeholder="e.g. https://minio.internal:9000" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>S3 Bucket Name</label>
+          <input type="text" name="s3_bucket" value="{{.Settings.s3_bucket}}" placeholder="e.g. distrimax-artifacts" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>S3 Region</label>
+          <input type="text" name="s3_region" value="{{.Settings.s3_region}}" placeholder="e.g. us-east-1" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>S3 Access Key ID</label>
+          <input type="text" name="s3_access_key_id" value="{{.Settings.s3_access_key_id}}" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label>S3 Secret Access Key (Encrypted at rest)</label>
+          <input type="password" name="s3_secret_access_key" placeholder="Enter new secret key to update" autocomplete="new-password">
+        </div>
+        <div class="form-group" style="display: flex; align-items: center; gap: 0.5rem; margin-top: 1.75rem;">
+          <input type="checkbox" name="s3_force_path_style" value="true" {{if eq .Settings.s3_force_path_style "true"}}checked{{end}} id="pathStyleCheck">
+          <label for="pathStyleCheck" style="margin-bottom: 0;">Force Path Style (Required for MinIO)</label>
+        </div>
       </div>
     </div>
   </div>
@@ -76,19 +107,19 @@
     <div class="grid grid-cols-2">
       <div class="form-group">
         <label>Sync Cron Schedule</label>
-        <input type="text" name="sync_schedule_cron" value="{{.Settings.sync_schedule_cron}}">
+        <input type="text" name="sync_schedule_cron" value="{{.Settings.sync_schedule_cron}}" placeholder="0 4 * * *" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Max Product Staleness Threshold (days)</label>
-        <input type="number" name="staleness_threshold_days" value="{{.Settings.staleness_threshold_days}}" min="1" max="90">
+        <input type="number" name="staleness_threshold_days" value="{{.Settings.staleness_threshold_days}}" min="1" max="90" placeholder="8" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Superseded Artifact Retention (days, MaxMind GeoLite max: 30)</label>
-        <input type="number" name="artifact_retention_days" value="{{.Settings.artifact_retention_days}}" min="1" max="30">
+        <input type="number" name="artifact_retention_days" value="{{.Settings.artifact_retention_days}}" min="1" max="30" placeholder="30" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Request Audit Log Retention (days)</label>
-        <input type="number" name="audit_retention_days" value="{{.Settings.audit_retention_days}}" min="7" max="365">
+        <input type="number" name="audit_retention_days" value="{{.Settings.audit_retention_days}}" min="7" max="365" placeholder="90" autocomplete="off">
       </div>
     </div>
   </div>
@@ -103,11 +134,11 @@
     <div class="grid grid-cols-2">
       <div class="form-group">
         <label>Webhook URL (HTTP POST target)</label>
-        <input type="text" name="webhook_url" value="{{.Settings.webhook_url}}" placeholder="https://internal.ops/webhooks/geolite">
+        <input type="text" name="webhook_url" value="{{.Settings.webhook_url}}" placeholder="https://internal.ops/webhooks/geolite" autocomplete="off">
       </div>
       <div class="form-group">
         <label>Webhook HMAC Secret Key (Encrypted at rest)</label>
-        <input type="password" name="webhook_hmac_secret" placeholder="Enter new secret to update">
+        <input type="password" name="webhook_hmac_secret" placeholder="Enter new secret to update" autocomplete="new-password">
       </div>
     </div>
   </div>
@@ -116,6 +147,53 @@
 </form>
 
 <script>
+function toggleStorageFields() {
+  const select = document.getElementById('storageBackendSelect');
+  const fsSection = document.getElementById('fs-storage-section');
+  const s3Section = document.getElementById('s3-storage-section');
+  const testBtn = document.getElementById('storageTestBtn');
+  const result = document.getElementById('storage-test-result');
+  if (result) result.style.display = 'none';
+
+  if (select.value === 's3') {
+    fsSection.style.display = 'none';
+    s3Section.style.display = 'block';
+    testBtn.innerText = 'Test S3 Connection';
+  } else {
+    fsSection.style.display = 'block';
+    s3Section.style.display = 'none';
+    testBtn.innerText = 'Test Filesystem Permissions';
+  }
+}
+
+function testCurrentStorage() {
+  const select = document.getElementById('storageBackendSelect');
+  if (select.value === 's3') {
+    testS3();
+  } else {
+    testFilesystem();
+  }
+}
+
+function testFilesystem() {
+  const el = document.getElementById('storage-test-result');
+  el.style.display = 'block';
+  el.className = 'flash-banner flash-success';
+  el.innerText = 'Testing local filesystem read/write/delete permissions...';
+  fetch('/admin/settings/test-fs', { method: 'POST', headers: {'X-CSRF-Token': '{{.CSRFToken}}'} })
+    .then(r => r.json())
+    .then(data => {
+      if (data.status === 'ok') {
+        el.className = 'flash-banner flash-success';
+        el.innerText = '✓ ' + (data.message || 'Local filesystem read/write capabilities verified successfully!');
+      } else {
+        el.className = 'flash-banner flash-error';
+        el.innerText = '✕ ' + data.error;
+      }
+    })
+    .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
+}
+
 function testMaxMind() {
   const el = document.getElementById('maxmind-test-result');
   el.style.display = 'block';
@@ -134,8 +212,9 @@ function testMaxMind() {
     })
     .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
 }
+
 function testS3() {
-  const el = document.getElementById('s3-test-result');
+  const el = document.getElementById('storage-test-result');
   el.style.display = 'block';
   el.className = 'flash-banner flash-success';
   el.innerText = 'Testing S3 bucket connection...';
@@ -152,6 +231,7 @@ function testS3() {
     })
     .catch(err => { el.className = 'flash-banner flash-error'; el.innerText = '✕ ' + err; });
 }
+
 function testWebhook() {
   const el = document.getElementById('webhook-test-result');
   el.style.display = 'block';

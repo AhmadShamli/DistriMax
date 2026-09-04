@@ -13,9 +13,16 @@
     <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">
       Queries MaxMind for all enabled products and downloads any new versions.
     </p>
+    {{if not .MaxMindConfigured}}
+      <div style="font-size: 0.8rem; color: var(--color-warning); margin-bottom: 0.75rem;">
+        ⚠️ MaxMind credentials not configured in Settings.
+      </div>
+    {{end}}
     <form action="/admin/operations/sync-all" method="POST">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-      <button type="submit" class="btn btn-primary btn-sm" style="width: 100%;">Sync All Products</button>
+      <button type="submit" class="btn {{if .MaxMindConfigured}}btn-primary{{else}}btn-secondary{{end}} btn-sm" style="width: 100%;" {{if not .MaxMindConfigured}}title="MaxMind credentials not configured in Settings"{{end}}>
+        {{if .MaxMindConfigured}}Sync All Products{{else}}⚠️ Sync All (Key Required){{end}}
+      </button>
     </form>
   </div>
 

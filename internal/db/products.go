@@ -215,3 +215,15 @@ func (d *DB) MarkVersionDeleted(ctx context.Context, id string) error {
 	_, err := d.ExecContext(ctx, "UPDATE product_versions SET is_deleted = 1, storage_path = '' WHERE id = ?", id)
 	return err
 }
+
+// UpdateProductsDefaults updates the default sync schedule, staleness days, and retention days across products.
+func (d *DB) UpdateProductsDefaults(ctx context.Context, cron string, stalenessDays, retentionDays int) error {
+	query := `UPDATE products SET
+		sync_schedule_cron = CASE WHEN ? != '' THEN ? ELSE sync_schedule_cron END,
+		staleness_days = CASE WHEN ? > 0 THEN ? ELSE staleness_days END,
+		retention_days = CASE WHEN ? > 0 THEN ? ELSE retention_days END,
+		updated_at = CURRENT_TIMESTAMP`
+	_, err := d.ExecContext(ctx, query, cron, cron, stalenessDays, stalenessDays, retentionDays, retentionDays)
+	return err
+}
+

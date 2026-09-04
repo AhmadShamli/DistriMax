@@ -15,10 +15,19 @@
       <span class="badge {{if .Product.IsEnabled}}badge-success{{else}}badge-neutral{{end}}">
         {{if .Product.IsEnabled}}ENABLED{{else}}DISABLED{{end}}
       </span>
+      {{if .CurrentVersion}}
+        <a href="/admin/products/download?product_id={{.Product.ID}}" class="btn btn-secondary btn-sm" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.25rem;">
+          ⬇️ Download MMDB
+        </a>
+      {{end}}
       <form action="/admin/products/sync" method="POST" style="display: inline;">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input type="hidden" name="product_id" value="{{.Product.ID}}">
-        <button type="submit" class="btn btn-primary btn-sm">Sync Upstream</button>
+        {{if $.MaxMindConfigured}}
+          <button type="submit" class="btn btn-primary btn-sm">Sync Upstream</button>
+        {{else}}
+          <button type="submit" class="btn btn-secondary btn-sm" style="opacity: 0.8;" title="MaxMind credentials not configured in Settings">⚠️ Sync (Key Required)</button>
+        {{end}}
       </form>
     </div>
   </div>
@@ -62,9 +71,12 @@
               -
             {{end}}
           </td>
-          <td>
+          <td style="display: flex; gap: 0.5rem; align-items: center;">
+            <a href="/admin/products/download?product_id={{.ProductID}}&version={{.Version}}" class="btn btn-secondary btn-sm" title="Download {{.Version}}" style="text-decoration: none;">
+              ⬇️ Download
+            </a>
             {{if not .IsCurrent}}
-              <form action="/admin/products/rollback" method="POST" onsubmit="return confirm('Promote version {{.Version}} to current? Active microservices will receive this version.');">
+              <form action="/admin/products/rollback" method="POST" onsubmit="return confirm('Promote version {{.Version}} to current? Active microservices will receive this version.');" style="display: inline;">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                 <input type="hidden" name="product_id" value="{{.ProductID}}">
                 <input type="hidden" name="version" value="{{.Version}}">

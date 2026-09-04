@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -242,7 +243,52 @@ func TestLiveTestHandlers(t *testing.T) {
 		t.Errorf("expected missing credentials error, got %s", rr.Body.String())
 	}
 
-	// 4. Test Operations page with WebhookDeliveries
+	// 4. Test Filesystem read/write test endpoint
+	req = httptest.NewRequest(http.MethodPost, "/admin/settings/test-fs", nil)
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/settings/test-fs, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), `"status":"ok"`) {
+		t.Errorf("expected status ok in test-fs response, got %s", rr.Body.String())
+	}
+
+	// 5. Test Settings page renders default cron and staleness values
+	req = httptest.NewRequest(http.MethodGet, "/admin/settings", nil)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/settings, got %d", rr.Code)
+	}
+	settingsBody := rr.Body.String()
+	if !strings.Contains(settingsBody, `value="0 4 * * *"`) {
+		t.Errorf("expected default sync cron value '0 4 * * *' in settings, got %s", settingsBody)
+	}
+	if !strings.Contains(settingsBody, `value="8"`) {
+		t.Errorf("expected default staleness days value '8' in settings, got %s", settingsBody)
+	}
+	if !strings.Contains(settingsBody, `autocomplete="new-password"`) {
+		t.Errorf("expected new-password autocomplete in settings")
+	}
+
+	// 6. Test /admin/users/ with trailing slash and autofill prevention
+	req = httptest.NewRequest(http.MethodGet, "/admin/users/", nil)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/users/, got %d", rr.Code)
+	}
+	usersBody := rr.Body.String()
+	if !strings.Contains(usersBody, `autocomplete="new-password"`) {
+		t.Errorf("expected new-password autocomplete on user form")
+	}
+
+	// 7. Test Operations page with WebhookDeliveries
 	req = httptest.NewRequest(http.MethodGet, "/admin/operations", nil)
 	req.AddCookie(sessionCookie)
 	rr = httptest.NewRecorder()
@@ -344,3 +390,164 @@ func TestStorageDriverSetupAndSwitching(t *testing.T) {
 		t.Errorf("expected storage manager active driver to be filesystem, got %s", adminUI.storageManager.ActiveDriver())
 	}
 }
+
+func TestProfileAndPasswordChange(t *testing.T) {
+	_, mux, database, _ := setupTestUI(t)
+	defer database.Close()
+	ctx := context.Background()
+	_ = database.SetSetting(ctx, "setup_completed", "true", false, "test")
+
+	// 1. Create admin user and session
+	hash, _ := auth.HashPassword("InitialPass123!")
+	user, err := database.CreateUser(ctx, "profile_admin", hash)
+	if err != nil {
+		t.Fatalf("failed to create user: %v", err)
+	}
+
+	sessID, _ := auth.GenerateSessionToken()
+	_ = database.CreateSession(ctx, sessID, user.ID, time.Now().Add(1*time.Hour))
+	sessionCookie := &http.Cookie{Name: "distrimax_session", Value: sessID}
+
+	// 2. View /admin/profile
+	req := httptest.NewRequest(http.MethodGet, "/admin/profile", nil)
+	req.AddCookie(sessionCookie)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/profile, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "Operator Profile & Security") {
+		t.Errorf("expected profile page title in response")
+	}
+
+	// 3. Password change: wrong current password
+	form := url.Values{
+		"csrf_token":       {sessID},
+		"current_password": {"WrongPassword!"},
+		"new_password":     {"BrandNewPass123!"},
+		"confirm_password": {"BrandNewPass123!"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/profile/change-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound || !strings.Contains(rr.Header().Get("Location"), "flash_error=Incorrect+current+password") {
+		t.Errorf("expected incorrect current password error, got loc=%s", rr.Header().Get("Location"))
+	}
+
+	// 4. Password change: mismatched new passwords
+	form.Set("current_password", "InitialPass123!")
+	form.Set("confirm_password", "DifferentPass123!")
+	req = httptest.NewRequest(http.MethodPost, "/admin/profile/change-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound || !strings.Contains(rr.Header().Get("Location"), "flash_error=New+passwords+do+not+match") {
+		t.Errorf("expected mismatched passwords error, got loc=%s", rr.Header().Get("Location"))
+	}
+
+	// 5. Password change: success
+	form.Set("confirm_password", "BrandNewPass123!")
+	req = httptest.NewRequest(http.MethodPost, "/admin/profile/change-password", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound || !strings.Contains(rr.Header().Get("Location"), "flash_success=Password+updated+successfully") {
+		t.Errorf("expected success redirect, got loc=%s", rr.Header().Get("Location"))
+	}
+
+	// 6. Verify password was updated in DB
+	updatedUser, _ := database.GetUserByID(ctx, user.ID)
+	ok, _ := auth.VerifyPassword("BrandNewPass123!", updatedUser.PasswordHash)
+	if !ok {
+		t.Errorf("expected new password to verify against stored hash")
+	}
+}
+
+func TestProductManualDownloadAndTopBarHealth(t *testing.T) {
+	adminUI, mux, database, _ := setupTestUI(t)
+	defer database.Close()
+	ctx := context.Background()
+	_ = database.SetSetting(ctx, "setup_completed", "true", false, "test")
+
+	// 1. Create user and session
+	hash, _ := auth.HashPassword("Pass12345!")
+	user, _ := database.CreateUser(ctx, "download_tester", hash)
+	sessID, _ := auth.GenerateSessionToken()
+	_ = database.CreateSession(ctx, sessID, user.ID, time.Now().Add(1*time.Hour))
+	sessionCookie := &http.Cookie{Name: "distrimax_session", Value: sessID}
+
+	// Before syncing products: top bar should show UNHEALTHY and 0 Active Products
+	req := httptest.NewRequest(http.MethodGet, "/admin/products", nil)
+	req.AddCookie(sessionCookie)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if !strings.Contains(rr.Body.String(), "UNHEALTHY") || !strings.Contains(rr.Body.String(), "0 Active Products") {
+		t.Errorf("expected UNHEALTHY and 0 Active Products before sync, got %s", rr.Body.String())
+	}
+
+	// 2. Publish a version for geolite-city
+	payload := []byte("fake-geolite2-city-database-bytes")
+	storagePath, err := adminUI.storage.StoreArtifact(ctx, "geolite-city", "2026-09-04", "GeoLite2-City.mmdb", bytes.NewReader(payload), int64(len(payload)))
+	if err != nil {
+		t.Fatalf("failed to store artifact: %v", err)
+	}
+
+	pv := &db.ProductVersion{
+		ProductID:      "geolite-city",
+		Version:        "2026-09-04",
+		ReleasedAt:     time.Now().UTC(),
+		SHA256:         "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+		SizeBytes:      int64(len(payload)),
+		StorageBackend: "filesystem",
+		StoragePath:    storagePath,
+	}
+	if err := database.PublishNewVersion(ctx, pv, 30); err != nil {
+		t.Fatalf("failed to publish version: %v", err)
+	}
+
+	// 3. Check top bar: should now show HEALTHY and 1 Active Product
+	req = httptest.NewRequest(http.MethodGet, "/admin/products", nil)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	productsHtml := rr.Body.String()
+	if !strings.Contains(productsHtml, "HEALTHY") {
+		t.Errorf("expected HEALTHY in top bar status when product is synced, got %s", productsHtml)
+	}
+	if !strings.Contains(productsHtml, "1 Active Product") {
+		t.Errorf("expected '1 Active Product' in top bar, got %s", productsHtml)
+	}
+	if !strings.Contains(productsHtml, "⬇️ Download MMDB") {
+		t.Errorf("expected '⬇️ Download MMDB' button in card header")
+	}
+	if !strings.Contains(productsHtml, "/admin/products/download?product_id=geolite-city") {
+		t.Errorf("expected download URL in products table")
+	}
+
+	// 4. Test downloading via GET /admin/products/download
+	req = httptest.NewRequest(http.MethodGet, "/admin/products/download?product_id=geolite-city", nil)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /admin/products/download, got %d", rr.Code)
+	}
+	if rr.Header().Get("Content-Disposition") != `attachment; filename="GeoLite2-City.mmdb"` {
+		t.Errorf("expected attachment header, got %s", rr.Header().Get("Content-Disposition"))
+	}
+	if !bytes.Equal(rr.Body.Bytes(), payload) {
+		t.Errorf("downloaded content mismatch, got %s", rr.Body.String())
+	}
+}
+
+

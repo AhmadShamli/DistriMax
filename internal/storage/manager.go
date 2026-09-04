@@ -134,3 +134,27 @@ func (m *StorageManager) VerifyArtifact(ctx context.Context, storagePath string,
 
 	return err
 }
+
+// CheckFilesystem tests read, write, and delete permissions on the local filesystem storage backend.
+func (m *StorageManager) CheckFilesystem(ctx context.Context) error {
+	m.mu.RLock()
+	fs := m.fsStorage
+	m.mu.RUnlock()
+
+	if fs == nil {
+		return errors.New("filesystem storage backend is not initialized")
+	}
+
+	if checker, ok := fs.(interface{ CheckCapabilities(context.Context) error }); ok {
+		return checker.CheckCapabilities(ctx)
+	}
+	return nil
+}
+
+// FilesystemStorage returns the underlying filesystem storage backend.
+func (m *StorageManager) FilesystemStorage() StorageBackend {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.fsStorage
+}
+

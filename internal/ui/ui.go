@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -53,7 +54,7 @@ func NewAdminUI(database *db.DB, cfg *config.Config, store storage.StorageBacken
 		parsedTemplates: make(map[string]*template.Template),
 	}
 
-	pages := []string{"dashboard", "products", "downloads", "apikeys", "operations", "audit", "users", "settings"}
+	pages := []string{"dashboard", "products", "downloads", "apikeys", "operations", "audit", "users", "settings", "profile"}
 	for _, page := range pages {
 		tmpl, err := template.ParseFS(templateFS, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
@@ -99,6 +100,7 @@ func (u *AdminUI) RegisterRoutes(mux *http.ServeMux) {
 	})
 	mux.HandleFunc("GET /admin/dashboard", u.requireAuth(u.handleDashboard))
 	mux.HandleFunc("GET /admin/products", u.requireAuth(u.handleProducts))
+	mux.HandleFunc("GET /admin/products/download", u.requireAuth(u.handleProductDownload))
 	mux.HandleFunc("POST /admin/products/sync", u.requireAuth(u.handleProductSync))
 	mux.HandleFunc("POST /admin/products/rollback", u.requireAuth(u.handleProductRollback))
 
@@ -115,14 +117,19 @@ func (u *AdminUI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/operations/backup", u.requireAuth(u.handleCreateBackup))
 
 	mux.HandleFunc("GET /admin/users", u.requireAuth(u.handleUsers))
+	mux.HandleFunc("GET /admin/users/", u.requireAuth(u.handleUsers))
 	mux.HandleFunc("POST /admin/users/create", u.requireAuth(u.handleUserCreate))
 	mux.HandleFunc("POST /admin/users/disable", u.requireAuth(u.handleUserDisable))
 	mux.HandleFunc("POST /admin/users/enable", u.requireAuth(u.handleUserEnable))
+
+	mux.HandleFunc("GET /admin/profile", u.requireAuth(u.handleProfile))
+	mux.HandleFunc("POST /admin/profile/change-password", u.requireAuth(u.handleProfileChangePassword))
 
 	mux.HandleFunc("GET /admin/settings", u.requireAuth(u.handleSettings))
 	mux.HandleFunc("POST /admin/settings/save", u.requireAuth(u.handleSettingsSave))
 	mux.HandleFunc("POST /admin/settings/test-maxmind", u.requireAuth(u.handleTestMaxMind))
 	mux.HandleFunc("POST /admin/settings/test-s3", u.requireAuth(u.handleTestS3))
+	mux.HandleFunc("POST /admin/settings/test-fs", u.requireAuth(u.handleTestFilesystem))
 	mux.HandleFunc("POST /admin/settings/test-webhook", u.requireAuth(u.handleTestWebhook))
 }
 
@@ -398,6 +405,13 @@ type BaseViewData struct {
 	CSRFToken          string
 	FlashSuccess       string
 	FlashError         string
+	MaxMindConfigured  bool
+}
+
+func (u *AdminUI) isMaxMindConfigured(ctx context.Context) bool {
+	accountID, _, _ := u.db.GetSetting(ctx, "maxmind_account_id")
+	encLicenseKey, _, _ := u.db.GetSetting(ctx, "maxmind_license_key")
+	return strings.TrimSpace(accountID) != "" && strings.TrimSpace(encLicenseKey) != ""
 }
 
 func (u *AdminUI) buildBaseData(r *http.Request, title, nav string) BaseViewData {
@@ -405,28 +419,70 @@ func (u *AdminUI) buildBaseData(r *http.Request, title, nav string) BaseViewData
 	csrf, _ := r.Context().Value(adminCSRFKey).(string)
 
 	products, _ := u.db.ListProducts(r.Context())
-	activeCount := 0
-	health := "HEALTHY"
+	syncedCount := 0
+	staleCount := 0
+	now := time.Now().UTC()
+
+	stalenessDays := 8
+	if val, _, err := u.db.GetSetting(r.Context(), "staleness_threshold_days"); err == nil && val != "" {
+		if d, err := strconv.Atoi(val); err == nil && d > 0 {
+			stalenessDays = d
+		}
+	}
+
 	for _, p := range products {
 		if p.IsEnabled {
-			activeCount++
 			cur, err := u.db.GetCurrentVersion(r.Context(), p.ID)
-			if err != nil || cur == nil {
-				health = "DEGRADED"
+			if err == nil && cur != nil && !cur.IsDeleted {
+				syncedCount++
+				threshold := p.StalenessDays
+				if threshold <= 0 {
+					threshold = stalenessDays
+				}
+				if now.Sub(cur.ReleasedAt) > time.Duration(threshold)*24*time.Hour {
+					staleCount++
+				}
 			}
 		}
+	}
+
+	health := "HEALTHY"
+	if syncedCount == 0 {
+		health = "UNHEALTHY"
+	} else if staleCount > 0 {
+		health = "DEGRADED"
 	}
 
 	return BaseViewData{
 		Title:              title,
 		ActiveNav:          nav,
 		HealthStatus:       health,
-		ActiveProductCount: activeCount,
+		ActiveProductCount: syncedCount,
 		CurrentUser:        user,
 		CSRFToken:          csrf,
 		FlashSuccess:       r.URL.Query().Get("flash_success"),
 		FlashError:         r.URL.Query().Get("flash_error"),
+		MaxMindConfigured:  u.isMaxMindConfigured(r.Context()),
 	}
+}
+
+func (u *AdminUI) newViewData(base BaseViewData, extra map[string]interface{}) map[string]interface{} {
+	data := map[string]interface{}{
+		"BaseViewData":       base,
+		"Title":              base.Title,
+		"ActiveNav":          base.ActiveNav,
+		"HealthStatus":       base.HealthStatus,
+		"ActiveProductCount": base.ActiveProductCount,
+		"CurrentUser":        base.CurrentUser,
+		"CSRFToken":          base.CSRFToken,
+		"FlashSuccess":       base.FlashSuccess,
+		"FlashError":         base.FlashError,
+		"MaxMindConfigured":  base.MaxMindConfigured,
+	}
+	for k, v := range extra {
+		data[k] = v
+	}
+	return data
 }
 
 func (u *AdminUI) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -461,14 +517,12 @@ func (u *AdminUI) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	// Server-side SVG sparkline points (generated from simple trend)
 	svgPoints := "0,50 30,45 60,35 90,40 120,20 150,25 180,15 210,30 240,10 270,18 300,5"
 
-	data := map[string]interface{}{
-		"BaseViewData":   base,
+	data := u.newViewData(base, map[string]interface{}{
 		"Products":       pList,
 		"Stats":          stats,
 		"StorageBackend": strings.ToUpper(storageBackend),
 		"SVGPoints":      svgPoints,
-		"CSRFToken":      base.CSRFToken,
-	}
+	})
 
 	_ = u.parsedTemplates["dashboard"].Execute(w, data)
 }
@@ -478,31 +532,45 @@ func (u *AdminUI) handleProducts(w http.ResponseWriter, r *http.Request) {
 	products, _ := u.db.ListProducts(r.Context())
 
 	type productWithVersions struct {
-		Product  *db.Product
-		Versions []*db.ProductVersion
+		Product        *db.Product
+		CurrentVersion *db.ProductVersion
+		Versions       []*db.ProductVersion
 	}
 	var list []productWithVersions
 	for _, p := range products {
 		versions, _ := u.db.ListProductVersions(r.Context(), p.ID)
-		list = append(list, productWithVersions{Product: p, Versions: versions})
+		cur, _ := u.db.GetCurrentVersion(r.Context(), p.ID)
+		list = append(list, productWithVersions{
+			Product:        p,
+			CurrentVersion: cur,
+			Versions:       versions,
+		})
 	}
 
-	data := map[string]interface{}{
-		"BaseViewData": base,
-		"Products":     list,
-		"CSRFToken":    base.CSRFToken,
-	}
+	data := u.newViewData(base, map[string]interface{}{
+		"Products": list,
+	})
 	_ = u.parsedTemplates["products"].Execute(w, data)
 }
 
 func (u *AdminUI) handleProductSync(w http.ResponseWriter, r *http.Request) {
+	redirectTarget := "/admin/products"
+	if strings.Contains(r.Header.Get("Referer"), "/admin/dashboard") {
+		redirectTarget = "/admin/dashboard"
+	}
+
+	if !u.isMaxMindConfigured(r.Context()) {
+		http.Redirect(w, r, fmt.Sprintf("%s?flash_error=Cannot+sync:+MaxMind+Account+ID+and+License+Key+are+not+configured.+Please+configure+them+in+Settings.", redirectTarget), http.StatusFound)
+		return
+	}
+
 	productID := r.FormValue("product_id")
 	res, err := u.syncer.SyncProduct(r.Context(), productID, "MANUAL")
 	if err != nil {
-		http.Redirect(w, r, fmt.Sprintf("/admin/products?flash_error=Sync+failed:+%s", err.Error()), http.StatusFound)
+		http.Redirect(w, r, fmt.Sprintf("%s?flash_error=Sync+failed:+%s", redirectTarget, url.QueryEscape(err.Error())), http.StatusFound)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/admin/products?flash_success=Sync+completed:+%s+(%s)", res.ProductID, res.Status), http.StatusFound)
+	http.Redirect(w, r, fmt.Sprintf("%s?flash_success=Sync+completed:+%s+(%s)", redirectTarget, url.QueryEscape(res.ProductID), url.QueryEscape(res.Status)), http.StatusFound)
 }
 
 func (u *AdminUI) handleProductRollback(w http.ResponseWriter, r *http.Request) {
@@ -520,12 +588,10 @@ func (u *AdminUI) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 	base := u.buildBaseData(r, "API Keys", "apikeys")
 	keys, _ := u.db.ListAPIKeys(r.Context())
 
-	data := map[string]interface{}{
-		"BaseViewData": base,
+	data := u.newViewData(base, map[string]interface{}{
 		"Keys":         keys,
 		"NewKeySecret": r.URL.Query().Get("new_key_secret"),
-		"CSRFToken":    base.CSRFToken,
-	}
+	})
 	_ = u.parsedTemplates["apikeys"].Execute(w, data)
 }
 
@@ -572,12 +638,10 @@ func (u *AdminUI) handleDownloads(w http.ResponseWriter, r *http.Request) {
 	stats, _ := u.db.GetDownloadStats(r.Context(), 24)
 	logs, _, _ := u.db.ListAuditLogs(r.Context(), 20, 0, "")
 
-	data := map[string]interface{}{
-		"BaseViewData":    base,
+	data := u.newViewData(base, map[string]interface{}{
 		"Stats":           stats,
 		"RecentDownloads": logs,
-		"CSRFToken":       base.CSRFToken,
-	}
+	})
 	_ = u.parsedTemplates["downloads"].Execute(w, data)
 }
 
@@ -594,8 +658,7 @@ func (u *AdminUI) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 	logs, total, _ := u.db.ListAuditLogs(r.Context(), limit, offset, product)
 
-	data := map[string]interface{}{
-		"BaseViewData":    base,
+	data := u.newViewData(base, map[string]interface{}{
 		"Logs":            logs,
 		"CurrentPage":     page,
 		"PrevPage":        page - 1,
@@ -603,8 +666,7 @@ func (u *AdminUI) handleAudit(w http.ResponseWriter, r *http.Request) {
 		"HasNextPage":     (page * limit) < total,
 		"TotalCount":      total,
 		"SelectedProduct": product,
-		"CSRFToken":       base.CSRFToken,
-	}
+	})
 	_ = u.parsedTemplates["audit"].Execute(w, data)
 }
 
@@ -669,23 +731,37 @@ func (u *AdminUI) handleOperations(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	data := map[string]interface{}{
-		"BaseViewData":      base,
+	data := u.newViewData(base, map[string]interface{}{
 		"SyncRuns":          runs,
 		"WebhookDeliveries": deliveries,
-		"CSRFToken":         base.CSRFToken,
-	}
+	})
 	_ = u.parsedTemplates["operations"].Execute(w, data)
 }
 
 func (u *AdminUI) handleSyncAll(w http.ResponseWriter, r *http.Request) {
+	if !u.isMaxMindConfigured(r.Context()) {
+		http.Redirect(w, r, "/admin/operations?flash_error=Cannot+sync:+MaxMind+Account+ID+and+License+Key+are+not+configured.+Please+configure+them+in+Settings.", http.StatusFound)
+		return
+	}
+
 	products, _ := u.db.ListProducts(r.Context())
+	var failed []string
+	var successCount int
 	for _, p := range products {
 		if p.IsEnabled {
-			_, _ = u.syncer.SyncProduct(r.Context(), p.ID, "MANUAL")
+			res, err := u.syncer.SyncProduct(r.Context(), p.ID, "MANUAL")
+			if err != nil {
+				failed = append(failed, fmt.Sprintf("%s (%s)", p.DisplayName, err.Error()))
+			} else if res != nil {
+				successCount++
+			}
 		}
 	}
-	http.Redirect(w, r, "/admin/operations?flash_success=Upstream+sync+triggered+for+all+enabled+products", http.StatusFound)
+	if len(failed) > 0 {
+		http.Redirect(w, r, fmt.Sprintf("/admin/operations?flash_error=Sync+failed+for:+%s", url.QueryEscape(strings.Join(failed, "; "))), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, fmt.Sprintf("/admin/operations?flash_success=Upstream+sync+completed+successfully+for+%d+enabled+product(s)", successCount), http.StatusFound)
 }
 
 func (u *AdminUI) handleRunCleanup(w http.ResponseWriter, r *http.Request) {
@@ -710,11 +786,9 @@ func (u *AdminUI) handleUsers(w http.ResponseWriter, r *http.Request) {
 	base := u.buildBaseData(r, "Users", "users")
 	users, _ := u.db.ListUsers(r.Context())
 
-	data := map[string]interface{}{
-		"BaseViewData": base,
-		"Users":        users,
-		"CSRFToken":    base.CSRFToken,
-	}
+	data := u.newViewData(base, map[string]interface{}{
+		"Users": users,
+	})
 	_ = u.parsedTemplates["users"].Execute(w, data)
 }
 
@@ -764,11 +838,42 @@ func (u *AdminUI) handleSettings(w http.ResponseWriter, r *http.Request) {
 		settingsMap[s.Key] = s.Value
 	}
 
-	data := map[string]interface{}{
-		"BaseViewData": base,
-		"Settings":     settingsMap,
-		"CSRFToken":    base.CSRFToken,
+	encLicenseKey, _, _ := u.db.GetSetting(r.Context(), "maxmind_license_key")
+
+	// Ensure default values are populated so inputs are never empty
+	if settingsMap["sync_schedule_cron"] == "" {
+		settingsMap["sync_schedule_cron"] = "0 4 * * *"
 	}
+	if settingsMap["staleness_threshold_days"] == "" {
+		settingsMap["staleness_threshold_days"] = "8"
+	}
+	if settingsMap["artifact_retention_days"] == "" {
+		settingsMap["artifact_retention_days"] = "30"
+	}
+	if settingsMap["audit_retention_days"] == "" {
+		settingsMap["audit_retention_days"] = "90"
+	}
+	if settingsMap["storage_backend"] == "" {
+		settingsMap["storage_backend"] = "filesystem"
+	}
+
+	artifactRoot := "/var/lib/distrimax/artifacts"
+	stagingRoot := "/var/lib/distrimax/staging"
+	if u.cfg != nil {
+		if u.cfg.ArtifactRoot != "" {
+			artifactRoot = u.cfg.ArtifactRoot
+		}
+		if u.cfg.StagingRoot != "" {
+			stagingRoot = u.cfg.StagingRoot
+		}
+	}
+
+	data := u.newViewData(base, map[string]interface{}{
+		"Settings":      settingsMap,
+		"HasLicenseKey": strings.TrimSpace(encLicenseKey) != "",
+		"ArtifactRoot":  artifactRoot,
+		"StagingRoot":   stagingRoot,
+	})
 	_ = u.parsedTemplates["settings"].Execute(w, data)
 }
 
@@ -787,11 +892,17 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, k := range keys {
-		val := r.FormValue(k)
+		val := strings.TrimSpace(r.FormValue(k))
 		if val != "" {
 			_ = u.db.SetSetting(r.Context(), k, val, false, updatedBy)
 		}
 	}
+
+	// Synchronize products defaults with updated schedule and retention
+	cronVal := strings.TrimSpace(r.FormValue("sync_schedule_cron"))
+	stalenessVal, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("staleness_threshold_days")))
+	retentionVal, _ := strconv.Atoi(strings.TrimSpace(r.FormValue("artifact_retention_days")))
+	_ = u.db.UpdateProductsDefaults(r.Context(), cronVal, stalenessVal, retentionVal)
 
 	// Storage Driver (defaults to filesystem)
 	storageBackend := strings.ToLower(strings.TrimSpace(r.FormValue("storage_backend")))
@@ -808,17 +919,17 @@ func (u *AdminUI) handleSettingsSave(w http.ResponseWriter, r *http.Request) {
 	_ = u.db.SetSetting(r.Context(), "s3_force_path_style", forcePath, false, updatedBy)
 
 	// Encrypted Secrets
-	if secret := r.FormValue("maxmind_license_key"); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
+	if secret := strings.TrimSpace(r.FormValue("maxmind_license_key")); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
 		enc, _ := auth.Encrypt([]byte(secret), u.cfg.SettingsEncryptionKey)
 		_ = u.db.SetSetting(r.Context(), "maxmind_license_key", enc, true, updatedBy)
 	}
 
-	if secret := r.FormValue("s3_secret_access_key"); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
+	if secret := strings.TrimSpace(r.FormValue("s3_secret_access_key")); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
 		enc, _ := auth.Encrypt([]byte(secret), u.cfg.SettingsEncryptionKey)
 		_ = u.db.SetSetting(r.Context(), "s3_secret_access_key", enc, true, updatedBy)
 	}
 
-	if secret := r.FormValue("webhook_hmac_secret"); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
+	if secret := strings.TrimSpace(r.FormValue("webhook_hmac_secret")); secret != "" && len(u.cfg.SettingsEncryptionKey) == 32 {
 		enc, _ := auth.Encrypt([]byte(secret), u.cfg.SettingsEncryptionKey)
 		_ = u.db.SetSetting(r.Context(), "webhook_hmac_secret", enc, true, updatedBy)
 	}
@@ -948,3 +1059,149 @@ func (u *AdminUI) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "status_code": 200})
 }
+
+func (u *AdminUI) handleTestFilesystem(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if u.storageManager != nil {
+		if err := u.storageManager.CheckFilesystem(ctx); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+			return
+		}
+	} else if u.cfg != nil {
+		fs, err := storage.NewFilesystemStorage(u.cfg.ArtifactRoot, u.cfg.StagingRoot)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+			return
+		}
+		if err := fs.CheckCapabilities(ctx); err != nil {
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": err.Error()})
+			return
+		}
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "ok",
+		"message": "Local filesystem read, write, and delete permissions verified successfully!",
+	})
+}
+
+func (u *AdminUI) handleProductDownload(w http.ResponseWriter, r *http.Request) {
+	productID := r.URL.Query().Get("product_id")
+	if productID == "" {
+		http.Redirect(w, r, "/admin/products?flash_error=Missing+product_id+parameter", http.StatusFound)
+		return
+	}
+
+	product, err := u.db.GetProduct(r.Context(), productID)
+	if err != nil {
+		http.Redirect(w, r, "/admin/products?flash_error=Product+not+found", http.StatusFound)
+		return
+	}
+
+	versionStr := r.URL.Query().Get("version")
+	var targetVersion *db.ProductVersion
+
+	if versionStr != "" {
+		versions, err := u.db.ListProductVersions(r.Context(), productID)
+		if err == nil {
+			for _, v := range versions {
+				if v.Version == versionStr {
+					targetVersion = v
+					break
+				}
+			}
+		}
+	}
+
+	if targetVersion == nil {
+		cur, err := u.db.GetCurrentVersion(r.Context(), productID)
+		if err != nil || cur == nil {
+			http.Redirect(w, r, fmt.Sprintf("/admin/products?flash_error=No+active+download+available+for+%s", url.QueryEscape(product.DisplayName)), http.StatusFound)
+			return
+		}
+		targetVersion = cur
+	}
+
+	if targetVersion.StoragePath == "" || targetVersion.IsDeleted {
+		http.Redirect(w, r, "/admin/products?flash_error=Artifact+is+no+longer+available+in+storage", http.StatusFound)
+		return
+	}
+
+	stream, _, err := u.storage.OpenArtifact(r.Context(), targetVersion.StoragePath)
+	if err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/admin/products?flash_error=Failed+to+open+artifact:+%s", url.QueryEscape(err.Error())), http.StatusFound)
+		return
+	}
+	defer stream.Close()
+
+	etag := fmt.Sprintf(`"%s"`, targetVersion.SHA256)
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, product.ArtifactFilename))
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Accept-Ranges", "bytes")
+
+	http.ServeContent(w, r, product.ArtifactFilename, targetVersion.ReleasedAt, stream)
+}
+
+func (u *AdminUI) handleProfile(w http.ResponseWriter, r *http.Request) {
+	base := u.buildBaseData(r, "Profile", "profile")
+	data := u.newViewData(base, nil)
+	_ = u.parsedTemplates["profile"].Execute(w, data)
+}
+
+func (u *AdminUI) handleProfileChangePassword(w http.ResponseWriter, r *http.Request) {
+	user, _ := r.Context().Value(adminUserKey).(*db.User)
+	if user == nil {
+		http.Redirect(w, r, "/admin/login", http.StatusFound)
+		return
+	}
+
+	currentPassword := r.FormValue("current_password")
+	newPassword := r.FormValue("new_password")
+	confirmPassword := r.FormValue("confirm_password")
+
+	if currentPassword == "" || len(newPassword) < 8 {
+		http.Redirect(w, r, "/admin/profile?flash_error=New+password+must+be+at+least+8+characters", http.StatusFound)
+		return
+	}
+
+	if newPassword != confirmPassword {
+		http.Redirect(w, r, "/admin/profile?flash_error=New+passwords+do+not+match", http.StatusFound)
+		return
+	}
+
+	// Fetch full user record with password hash
+	dbUser, err := u.db.GetUserByID(r.Context(), user.ID)
+	if err != nil {
+		http.Redirect(w, r, "/admin/profile?flash_error=Failed+to+retrieve+user+account", http.StatusFound)
+		return
+	}
+
+	// Verify current password
+	valid, err := auth.VerifyPassword(currentPassword, dbUser.PasswordHash)
+	if err != nil || !valid {
+		http.Redirect(w, r, "/admin/profile?flash_error=Incorrect+current+password", http.StatusFound)
+		return
+	}
+
+	// Hash new password using Argon2id
+	newHash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		http.Redirect(w, r, "/admin/profile?flash_error=Failed+to+securely+hash+new+password", http.StatusFound)
+		return
+	}
+
+	// Update user password in DB
+	if err := u.db.UpdateUserPassword(r.Context(), user.ID, newHash); err != nil {
+		http.Redirect(w, r, fmt.Sprintf("/admin/profile?flash_error=Failed+to+update+password:+%s", url.QueryEscape(err.Error())), http.StatusFound)
+		return
+	}
+
+	http.Redirect(w, r, "/admin/profile?flash_success=Password+updated+successfully", http.StatusFound)
+}
+
+

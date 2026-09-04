@@ -8,15 +8,18 @@
   <!-- Create User -->
   <div class="card">
     <div class="card-header"><span class="card-title">Create Admin User</span></div>
-    <form action="/admin/users/create" method="POST">
+    <form action="/admin/users/create" method="POST" autocomplete="off">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <!-- Hidden dummy inputs to prevent browser from autofilling saved credentials into user creation form -->
+      <input type="text" style="display:none" aria-hidden="true" tabindex="-1" autocomplete="off">
+      <input type="password" style="display:none" aria-hidden="true" tabindex="-1" autocomplete="off">
       <div class="form-group">
         <label>Username</label>
-        <input type="text" name="username" required placeholder="admin_username">
+        <input type="text" name="username" required placeholder="admin_username" autocomplete="off" autocapitalize="none" spellcheck="false">
       </div>
       <div class="form-group">
         <label>Password (min 8 characters)</label>
-        <input type="password" name="password" required minlength="8">
+        <input type="password" name="password" required minlength="8" autocomplete="new-password">
       </div>
       <button type="submit" class="btn btn-primary" style="width: 100%;">Create Account</button>
     </form>

@@ -20,6 +20,7 @@
         <li><a href="/admin/operations" class="{{if eq .ActiveNav "operations"}}active{{end}}">⚙️ Operations</a></li>
         <li><a href="/admin/audit" class="{{if eq .ActiveNav "audit"}}active{{end}}">📜 Audit Logs</a></li>
         <li><a href="/admin/users" class="{{if eq .ActiveNav "users"}}active{{end}}">👥 Users</a></li>
+        <li><a href="/admin/profile" class="{{if eq .ActiveNav "profile"}}active{{end}}">👤 Profile</a></li>
         <li><a href="/admin/settings" class="{{if eq .ActiveNav "settings"}}active{{end}}">🛠️ Settings</a></li>
       </ul>
       <div style="font-size: 0.75rem; color: var(--text-muted); padding: 0.5rem;">
@@ -34,11 +35,13 @@
             ● {{.HealthStatus}}
           </span>
           <span style="font-size: 0.85rem; color: var(--text-muted);">
-            {{.ActiveProductCount}} Active Products
+            {{.ActiveProductCount}} Active {{if eq .ActiveProductCount 1}}Product{{else}}Products{{end}}
           </span>
         </div>
         <div class="header-right">
-          <span style="font-size: 0.85rem; font-weight: 500;">👤 {{.CurrentUser.Username}}</span>
+          <a href="/admin/profile" style="font-size: 0.85rem; font-weight: 500; color: var(--text-main); text-decoration: none;" title="Edit Profile & Password">
+            👤 {{.CurrentUser.Username}}
+          </a>
           <form action="/admin/logout" method="POST" style="display:inline;">
             <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
             <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
@@ -55,6 +58,14 @@
         {{if .FlashError}}
           <div class="flash-banner flash-error">
             <span>✕ {{.FlashError}}</span>
+          </div>
+        {{end}}
+        {{if not .MaxMindConfigured}}
+          <div class="flash-banner flash-warning" style="margin-bottom: 1.5rem;">
+            <span>⚠️ <strong>MaxMind Credentials Missing:</strong> Upstream database synchronization is disabled until your Account ID and License Key are configured.</span>
+            {{if ne .ActiveNav "settings"}}
+              <a href="/admin/settings" class="btn btn-sm btn-primary" style="margin-left: 1rem; white-space: nowrap; text-decoration: none;">Configure in Settings</a>
+            {{end}}
           </div>
         {{end}}
 

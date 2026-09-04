@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -30,6 +31,72 @@ func NewFilesystemStorage(artifactRoot, stagingRoot string) (*FilesystemStorage,
 		artifactRoot: artifactRoot,
 		stagingRoot:  stagingRoot,
 	}, nil
+}
+
+// ArtifactRoot returns the configured artifact storage directory.
+func (fs *FilesystemStorage) ArtifactRoot() string {
+	return fs.artifactRoot
+}
+
+// StagingRoot returns the configured staging directory.
+func (fs *FilesystemStorage) StagingRoot() string {
+	return fs.stagingRoot
+}
+
+// CheckCapabilities verifies write, read, and delete access across staging and artifact directories.
+func (fs *FilesystemStorage) CheckCapabilities(ctx context.Context) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+
+	// 1. Verify directory presence
+	if err := os.MkdirAll(fs.stagingRoot, 0750); err != nil {
+		return fmt.Errorf("staging directory inaccessible (%s): %w", fs.stagingRoot, err)
+	}
+	if err := os.MkdirAll(fs.artifactRoot, 0750); err != nil {
+		return fmt.Errorf("artifact directory inaccessible (%s): %w", fs.artifactRoot, err)
+	}
+
+	testPayload := []byte(fmt.Sprintf("distrimax-check-%d", time.Now().UnixNano()))
+
+	// 2. Test staging root write, read, delete
+	stagingProbe := filepath.Join(fs.stagingRoot, fmt.Sprintf(".probe_%d.tmp", time.Now().UnixNano()))
+	if err := os.WriteFile(stagingProbe, testPayload, 0600); err != nil {
+		return fmt.Errorf("write test failed in staging directory (%s): %w", fs.stagingRoot, err)
+	}
+	defer func() { _ = os.Remove(stagingProbe) }()
+
+	readBackStaging, err := os.ReadFile(stagingProbe)
+	if err != nil {
+		return fmt.Errorf("read test failed in staging directory: %w", err)
+	}
+	if !bytes.Equal(readBackStaging, testPayload) {
+		return fmt.Errorf("data integrity mismatch in staging directory")
+	}
+	if err := os.Remove(stagingProbe); err != nil {
+		return fmt.Errorf("delete test failed in staging directory: %w", err)
+	}
+
+	// 3. Test artifact root write, read, delete
+	artProbeDir := filepath.Join(fs.artifactRoot, fmt.Sprintf(".probe_dir_%d", time.Now().UnixNano()))
+	if err := os.MkdirAll(artProbeDir, 0750); err != nil {
+		return fmt.Errorf("directory creation failed in artifact directory (%s): %w", fs.artifactRoot, err)
+	}
+	defer func() { _ = os.RemoveAll(artProbeDir) }()
+
+	artProbeFile := filepath.Join(artProbeDir, "probe.tmp")
+	if err := os.WriteFile(artProbeFile, testPayload, 0600); err != nil {
+		return fmt.Errorf("write test failed in artifact directory (%s): %w", fs.artifactRoot, err)
+	}
+	readBackArt, err := os.ReadFile(artProbeFile)
+	if err != nil {
+		return fmt.Errorf("read test failed in artifact directory: %w", err)
+	}
+	if !bytes.Equal(readBackArt, testPayload) {
+		return fmt.Errorf("data integrity mismatch in artifact directory")
+	}
+	_ = os.RemoveAll(artProbeDir)
+
+	return nil
 }
 
 // StoreArtifact streams into a staging file and renames it atomically to destination.

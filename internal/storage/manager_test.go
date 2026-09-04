@@ -59,4 +59,10 @@ func TestStorageManager(t *testing.T) {
 	if err := mgr.DeleteArtifact(ctx, relPath); err != nil {
 		t.Errorf("DeleteArtifact failed: %v", err)
 	}
+
+	// Test filesystem read/write/delete capabilities check
+	if err := mgr.CheckFilesystem(ctx); err != nil {
+		t.Errorf("CheckFilesystem failed: %v", err)
+	}
 }
+

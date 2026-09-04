@@ -37,7 +37,11 @@
     <form action="/admin/products/sync" method="POST">
       <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
       <input type="hidden" name="product_id" value="{{.ID}}">
-      <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Sync Now</button>
+      {{if $.MaxMindConfigured}}
+        <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%;">Sync Now</button>
+      {{else}}
+        <button type="submit" class="btn btn-secondary btn-sm" style="width: 100%; opacity: 0.8;" title="MaxMind credentials not configured in Settings">⚠️ Sync (Key Required)</button>
+      {{end}}
     </form>
   </div>
   {{end}}
