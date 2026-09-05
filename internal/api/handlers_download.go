@@ -40,14 +40,39 @@ func (h *DownloadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Fetch current version
-	version, err := h.db.GetCurrentVersion(r.Context(), productID)
-	if err != nil {
-		if errors.Is(err, db.ErrVersionNotFound) {
-			JSONError(w, http.StatusNotFound, "version_not_found", fmt.Sprintf("No active version published for product %q", productID))
+	// 2. Fetch target version (specific version or active current version)
+	var version *db.ProductVersion
+	versionStr := r.URL.Query().Get("version")
+	if versionStr == "" {
+		if dt, ok := r.Context().Value(DownloadTokenContextKey).(*db.DownloadToken); ok && dt != nil && dt.Version != "" {
+			versionStr = dt.Version
+		}
+	}
+
+	if versionStr != "" {
+		version, err = h.db.GetProductVersion(r.Context(), productID, versionStr)
+		if err != nil {
+			if errors.Is(err, db.ErrVersionNotFound) {
+				JSONError(w, http.StatusNotFound, "version_not_found", fmt.Sprintf("Version %q not found for product %q", versionStr, productID))
+				return
+			}
+			JSONError(w, http.StatusInternalServerError, "database_error", "Failed to query product version")
 			return
 		}
-		JSONError(w, http.StatusInternalServerError, "database_error", "Failed to query current version")
+	} else {
+		version, err = h.db.GetCurrentVersion(r.Context(), productID)
+		if err != nil {
+			if errors.Is(err, db.ErrVersionNotFound) {
+				JSONError(w, http.StatusNotFound, "version_not_found", fmt.Sprintf("No active version published for product %q", productID))
+				return
+			}
+			JSONError(w, http.StatusInternalServerError, "database_error", "Failed to query current version")
+			return
+		}
+	}
+
+	if version.IsDeleted || version.StoragePath == "" {
+		JSONError(w, http.StatusNotFound, "artifact_missing", "Artifact file is no longer available in storage")
 		return
 	}
 

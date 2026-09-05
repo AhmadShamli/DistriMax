@@ -101,6 +101,25 @@ func (d *DB) GetCurrentVersion(ctx context.Context, productID string) (*ProductV
 	return &v, nil
 }
 
+func (d *DB) GetProductVersion(ctx context.Context, productID, version string) (*ProductVersion, error) {
+	query := `SELECT id, product_id, version, released_at, sha256, size_bytes, storage_backend, storage_path, is_current, superseded_at, cleanup_deadline, is_deleted, created_at
+		FROM product_versions WHERE product_id = ? AND version = ? AND is_deleted = 0 LIMIT 1`
+	row := d.QueryRowContext(ctx, query, productID, version)
+
+	var v ProductVersion
+	var isCurrent, isDeleted int
+	err := row.Scan(&v.ID, &v.ProductID, &v.Version, &v.ReleasedAt, &v.SHA256, &v.SizeBytes, &v.StorageBackend, &v.StoragePath, &isCurrent, &v.SupersededAt, &v.CleanupDeadline, &isDeleted, &v.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrVersionNotFound
+		}
+		return nil, err
+	}
+	v.IsCurrent = (isCurrent == 1)
+	v.IsDeleted = (isDeleted == 1)
+	return &v, nil
+}
+
 func (d *DB) ListProductVersions(ctx context.Context, productID string) ([]*ProductVersion, error) {
 	query := `SELECT id, product_id, version, released_at, sha256, size_bytes, storage_backend, storage_path, is_current, superseded_at, cleanup_deadline, is_deleted, created_at
 		FROM product_versions WHERE product_id = ? AND is_deleted = 0 ORDER BY released_at DESC`

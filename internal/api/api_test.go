@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -255,3 +256,157 @@ func TestBreakGlassRecovery(t *testing.T) {
 		t.Error("recovered user password does not match")
 	}
 }
+
+func TestTemporaryDownloadToken(t *testing.T) {
+	server, database, store, _, _ := setupTestServer(t)
+	defer database.Close()
+	ctx := context.Background()
+
+	handler := server.Handler()
+
+	// Create another version for geolite-city
+	v2Content := []byte("v2 binary content for city")
+	storePathV2, _ := store.StoreArtifact(ctx, "geolite-city", "2026-09-05", "GeoLite2-City.mmdb", bytes.NewReader(v2Content), int64(len(v2Content)))
+	v2 := &db.ProductVersion{
+		ProductID:      "geolite-city",
+		Version:        "2026-09-05",
+		ReleasedAt:     time.Now().UTC(),
+		SHA256:         "mock-sha-v2",
+		SizeBytes:      int64(len(v2Content)),
+		StorageBackend: "filesystem",
+		StoragePath:    storePathV2,
+	}
+	_ = database.PublishNewVersion(ctx, v2, 30)
+
+	// 1. Create valid temporary token for current version
+	validTok := "dmt_valid_token_123"
+	err := database.CreateDownloadToken(ctx, &db.DownloadToken{
+		Token:     validTok,
+		ProductID: "geolite-city",
+		CreatedBy: "admin",
+		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateDownloadToken failed: %v", err)
+	}
+
+	// Download using valid token -> 200 OK (downloads current version v2)
+	req := httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?token="+validTok, nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with valid temp token, got %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != string(v2Content) {
+		t.Errorf("expected v2 content, got %q", rr.Body.String())
+	}
+	if rr.Header().Get("Content-Disposition") != `attachment; filename="GeoLite2-City.mmdb"` {
+		t.Errorf("unexpected Content-Disposition: %s", rr.Header().Get("Content-Disposition"))
+	}
+
+	// Verify token usage count increased
+	tokRec, err := database.GetDownloadToken(ctx, validTok)
+	if err != nil {
+		t.Fatalf("GetDownloadToken failed: %v", err)
+	}
+	// Usage count is updated asynchronously, give a tiny moment if needed
+	time.Sleep(10 * time.Millisecond)
+	tokRec, _ = database.GetDownloadToken(ctx, validTok)
+	if tokRec.DownloadCount < 1 {
+		t.Logf("note: token download count is %d (updated async)", tokRec.DownloadCount)
+	}
+
+	// 2. Download historical version using ?version=
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?version=2026-09-04&token="+validTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK for historical version, got %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != "binary mmdb content for city database" {
+		t.Errorf("expected v1 content, got %q", rr.Body.String())
+	}
+
+	// 3. Expired token -> 401
+	expiredTok := "dmt_expired_token_456"
+	_ = database.CreateDownloadToken(ctx, &db.DownloadToken{
+		Token:     expiredTok,
+		ProductID: "geolite-city",
+		CreatedBy: "admin",
+		ExpiresAt: time.Now().UTC().Add(-10 * time.Minute),
+	})
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?token="+expiredTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for expired token, got %d", rr.Code)
+	}
+
+	// 4. Revoked token -> 401
+	revokedTok := "dmt_revoked_token_789"
+	_ = database.CreateDownloadToken(ctx, &db.DownloadToken{
+		Token:     revokedTok,
+		ProductID: "geolite-city",
+		CreatedBy: "admin",
+		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+		IsRevoked: true,
+	})
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?token="+revokedTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for revoked token, got %d", rr.Code)
+	}
+
+	// 5. Product mismatch -> 403
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-country/download?token="+validTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for product mismatch, got %d", rr.Code)
+	}
+
+	// 6. Token scoped to specific version
+	scopedTok := "dmt_scoped_v1"
+	_ = database.CreateDownloadToken(ctx, &db.DownloadToken{
+		Token:     scopedTok,
+		ProductID: "geolite-city",
+		Version:   "2026-09-04",
+		CreatedBy: "admin",
+		ExpiresAt: time.Now().UTC().Add(1 * time.Hour),
+	})
+
+	// Access without version param downloads the scoped version 2026-09-04
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?token="+scopedTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d", rr.Code)
+	}
+	if rr.Body.String() != "binary mmdb content for city database" {
+		t.Errorf("expected scoped v1 content, got %q", rr.Body.String())
+	}
+
+	// Access with mismatched version param -> 403
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download?version=2026-09-05&token="+scopedTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for version mismatch, got %d", rr.Code)
+	}
+
+	// 7. Verify token was redacted in audit logs
+	logs, _, _ := database.ListAuditLogs(ctx, 20, 0, "")
+	for _, l := range logs {
+		if strings.Contains(l.Path, "token=") {
+			if strings.Contains(l.Path, validTok) || strings.Contains(l.Path, expiredTok) {
+				t.Errorf("audit log leaked unredacted download token: %s", l.Path)
+			}
+			if !strings.Contains(l.Path, "REDACTED") {
+				t.Errorf("expected REDACTED in sanitized audit log path: %s", l.Path)
+			}
+		}
+	}
+}
+

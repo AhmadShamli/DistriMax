@@ -135,3 +135,16 @@ func TestSessionAndCSRFTokens(t *testing.T) {
 		t.Error("expected empty CSRF tokens to fail validation")
 	}
 }
+
+func TestGenerateDownloadToken(t *testing.T) {
+	tok, err := GenerateDownloadToken()
+	if err != nil {
+		t.Fatalf("GenerateDownloadToken failed: %v", err)
+	}
+	if !strings.HasPrefix(tok, DownloadTokenPrefix) {
+		t.Errorf("expected token prefix %s, got %s", DownloadTokenPrefix, tok)
+	}
+	if len(tok) != len(DownloadTokenPrefix)+48 {
+		t.Errorf("expected token length %d, got %d", len(DownloadTokenPrefix)+48, len(tok))
+	}
+}

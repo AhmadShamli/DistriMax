@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -16,7 +17,8 @@ import (
 type contextKey string
 
 const (
-	APIKeyContextKey contextKey = "apiKey"
+	APIKeyContextKey        contextKey = "apiKey"
+	DownloadTokenContextKey contextKey = "downloadToken"
 )
 
 // JSONError sends a consistent JSON error envelope.
@@ -177,6 +179,65 @@ func RequireAPIKey(database *db.DB, requiredScope string) func(http.Handler) htt
 
 			ctx := context.WithValue(r.Context(), APIKeyContextKey, matchedKey)
 			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RequireDownloadAuth verifies authentication for downloads via either:
+// 1. Temporary direct download token (?token=... or ?download_token=...)
+// 2. Permanent Client API Key (Bearer header, X-API-Key, or ?api_key=...)
+func RequireDownloadAuth(database *db.DB) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := r.URL.Query().Get("token")
+			if token == "" {
+				token = r.URL.Query().Get("download_token")
+			}
+
+			// If a temporary download token is provided, validate it
+			if token != "" {
+				dt, err := database.GetDownloadToken(r.Context(), token)
+				if err != nil {
+					JSONError(w, http.StatusUnauthorized, "invalid_token", "The provided download token is invalid or does not exist")
+					return
+				}
+
+				if dt.IsRevoked {
+					JSONError(w, http.StatusUnauthorized, "token_revoked", "The provided download token has been revoked")
+					return
+				}
+
+				if time.Now().UTC().After(dt.ExpiresAt) {
+					JSONError(w, http.StatusUnauthorized, "token_expired", "The temporary download token has expired")
+					return
+				}
+
+				productID := r.PathValue("product")
+				if productID != "" && dt.ProductID != productID {
+					JSONError(w, http.StatusForbidden, "product_access_denied", "The download token is not authorized for this product")
+					return
+				}
+
+				if dt.Version != "" {
+					reqVersion := r.URL.Query().Get("version")
+					if reqVersion != "" && reqVersion != dt.Version {
+						JSONError(w, http.StatusForbidden, "version_access_denied", fmt.Sprintf("The download token is restricted to version %q", dt.Version))
+						return
+					}
+				}
+
+				// Increment download token usage asynchronously
+				go func(tok string) {
+					_ = database.IncrementDownloadTokenUsage(context.Background(), tok)
+				}(token)
+
+				ctx := context.WithValue(r.Context(), DownloadTokenContextKey, dt)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+
+			// Otherwise, fall back to standard API key authentication with "download" scope
+			RequireAPIKey(database, "download")(next).ServeHTTP(w, r)
 		})
 	}
 }

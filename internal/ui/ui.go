@@ -101,6 +101,7 @@ func (u *AdminUI) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/dashboard", u.requireAuth(u.handleDashboard))
 	mux.HandleFunc("GET /admin/products", u.requireAuth(u.handleProducts))
 	mux.HandleFunc("GET /admin/products/download", u.requireAuth(u.handleProductDownload))
+	mux.HandleFunc("POST /admin/products/temporary-link", u.requireAuth(u.handleProductTemporaryLink))
 	mux.HandleFunc("POST /admin/products/sync", u.requireAuth(u.handleProductSync))
 	mux.HandleFunc("POST /admin/products/rollback", u.requireAuth(u.handleProductRollback))
 
@@ -198,6 +199,16 @@ func (u *AdminUI) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if setupDone != "true" {
 			http.Redirect(w, r, "/setup", http.StatusFound)
 			return
+		}
+
+		// Allow unauthenticated download if temporary download token is present
+		if r.URL.Path == "/admin/products/download" && r.URL.Query().Get("token") != "" {
+			productID := r.URL.Query().Get("product_id")
+			if productID != "" {
+				target := fmt.Sprintf("/v1/products/%s/download?%s", productID, r.URL.RawQuery)
+				http.Redirect(w, r, target, http.StatusFound)
+				return
+			}
 		}
 
 		cookie, err := r.Cookie("distrimax_session")
@@ -1145,6 +1156,111 @@ func (u *AdminUI) handleProductDownload(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	http.ServeContent(w, r, product.ArtifactFilename, targetVersion.ReleasedAt, stream)
+}
+
+func (u *AdminUI) handleProductTemporaryLink(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	productID := strings.TrimSpace(r.FormValue("product_id"))
+	if productID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Missing product_id parameter"})
+		return
+	}
+
+	product, err := u.db.GetProduct(r.Context(), productID)
+	if err != nil || product == nil {
+		w.WriteHeader(http.StatusNotFound)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Product not found"})
+		return
+	}
+
+	versionStr := strings.TrimSpace(r.FormValue("version"))
+	if versionStr != "" {
+		pv, err := u.db.GetProductVersion(r.Context(), productID, versionStr)
+		if err != nil || pv == nil || pv.IsDeleted {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Specified version not found or deleted"})
+			return
+		}
+	} else {
+		cur, err := u.db.GetCurrentVersion(r.Context(), productID)
+		if err != nil || cur == nil || cur.IsDeleted {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "No active version available for this product"})
+			return
+		}
+	}
+
+	// Parse duration in hours (default 24h, min 1h, max 720h = 30 days)
+	durationHours := 24
+	if dStr := r.FormValue("duration_hours"); dStr != "" {
+		if d, err := strconv.Atoi(dStr); err == nil && d >= 1 && d <= 720 {
+			durationHours = d
+		}
+	}
+
+	tokenStr, err := auth.GenerateDownloadToken()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Failed to generate token"})
+		return
+	}
+
+	currentUser, _ := r.Context().Value(adminUserKey).(*db.User)
+	createdBy := "admin"
+	if currentUser != nil {
+		createdBy = currentUser.Username
+	}
+
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Duration(durationHours) * time.Hour)
+
+	dt := &db.DownloadToken{
+		Token:     tokenStr,
+		ProductID: productID,
+		Version:   versionStr,
+		CreatedBy: createdBy,
+		CreatedAt: now,
+		ExpiresAt: expiresAt,
+	}
+
+	if err := u.db.CreateDownloadToken(r.Context(), dt); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": "Failed to store download token"})
+		return
+	}
+
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	host := r.Host
+	if host == "" {
+		host = "localhost:8080"
+	}
+
+	var downloadPath string
+	if versionStr != "" {
+		downloadPath = fmt.Sprintf("/v1/products/%s/download?version=%s&token=%s", url.PathEscape(productID), url.QueryEscape(versionStr), url.QueryEscape(tokenStr))
+	} else {
+		downloadPath = fmt.Sprintf("/v1/products/%s/download?token=%s", url.PathEscape(productID), url.QueryEscape(tokenStr))
+	}
+
+	fullURL := fmt.Sprintf("%s://%s%s", scheme, host, downloadPath)
+	curlCmd := fmt.Sprintf("curl -L -O %q", fullURL)
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":           "ok",
+		"token":            tokenStr,
+		"product_id":       productID,
+		"version":          versionStr,
+		"expires_at":       expiresAt.Format(time.RFC3339),
+		"expires_in_hours": durationHours,
+		"download_path":    downloadPath,
+		"download_url":     fullURL,
+		"curl_command":     curlCmd,
+	})
 }
 
 func (u *AdminUI) handleProfile(w http.ResponseWriter, r *http.Request) {

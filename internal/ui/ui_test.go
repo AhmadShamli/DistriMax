@@ -3,6 +3,7 @@ package ui
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -529,6 +530,12 @@ func TestProductManualDownloadAndTopBarHealth(t *testing.T) {
 	if !strings.Contains(productsHtml, "⬇️ Download MMDB") {
 		t.Errorf("expected '⬇️ Download MMDB' button in card header")
 	}
+	if !strings.Contains(productsHtml, "Copy Temporary Link") {
+		t.Errorf("expected 'Copy Temporary Link' button in card header")
+	}
+	if !strings.Contains(productsHtml, "tempLinkModalBackdrop") {
+		t.Errorf("expected modal backdrop in products page")
+	}
 	if !strings.Contains(productsHtml, "/admin/products/download?product_id=geolite-city") {
 		t.Errorf("expected download URL in products table")
 	}
@@ -547,6 +554,137 @@ func TestProductManualDownloadAndTopBarHealth(t *testing.T) {
 	}
 	if !bytes.Equal(rr.Body.Bytes(), payload) {
 		t.Errorf("downloaded content mismatch, got %s", rr.Body.String())
+	}
+}
+
+func TestProductTemporaryLinkGenerationAndDirectDownload(t *testing.T) {
+	ctx := context.Background()
+	_, mux, database, _ := setupTestUI(t)
+	defer database.Close()
+
+	// 1. Log in admin user
+	adminPass := "SuperSecret123!"
+	adminHash, _ := auth.HashPassword(adminPass)
+	adminUser, err := database.CreateUser(ctx, "admin", adminHash)
+	if err != nil {
+		t.Fatalf("CreateUser failed: %v", err)
+	}
+	_ = database.SetSetting(ctx, "setup_completed", "true", false, "admin")
+
+	sessID, _ := auth.GenerateSessionToken()
+	_ = database.CreateSession(ctx, sessID, adminUser.ID, time.Now().UTC().Add(24*time.Hour))
+	sessionCookie := &http.Cookie{Name: "distrimax_session", Value: sessID}
+
+	// Create a published version
+	pv := &db.ProductVersion{
+		ProductID:      "geolite-city",
+		Version:        "2026-09-04",
+		ReleasedAt:     time.Now().UTC(),
+		SHA256:         "mock-sha-test",
+		SizeBytes:      100,
+		StorageBackend: "filesystem",
+		StoragePath:    "artifacts/geolite-city/2026-09-04/GeoLite2-City.mmdb",
+	}
+	_ = database.PublishNewVersion(ctx, pv, 30)
+
+	// 2. Request temporary link without CSRF -> 403 Forbidden
+	form := url.Values{
+		"product_id":     {"geolite-city"},
+		"duration_hours": {"24"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/admin/products/temporary-link", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie)
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("expected 403 without CSRF token, got %d", rr.Code)
+	}
+
+	// 3. Request temporary link with valid CSRF header -> 200 OK
+	req = httptest.NewRequest(http.MethodPost, "/admin/products/temporary-link", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for temporary-link, got %d, body: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode json response: %v", err)
+	}
+
+	if resp["status"] != "ok" {
+		t.Errorf("expected status ok, got %v", resp["status"])
+	}
+	tok, ok := resp["token"].(string)
+	if !ok || !strings.HasPrefix(tok, "dmt_") {
+		t.Errorf("expected dmt_ token, got %v", resp["token"])
+	}
+	if !strings.Contains(resp["download_url"].(string), tok) {
+		t.Errorf("expected download_url to contain token, got %v", resp["download_url"])
+	}
+	if !strings.Contains(resp["curl_command"].(string), "curl -L -O") {
+		t.Errorf("expected curl_command to contain curl -L -O, got %v", resp["curl_command"])
+	}
+
+	// Verify token in DB
+	dbTok, err := database.GetDownloadToken(ctx, tok)
+	if err != nil {
+		t.Fatalf("GetDownloadToken failed: %v", err)
+	}
+	if dbTok.ProductID != "geolite-city" {
+		t.Errorf("expected product geolite-city, got %s", dbTok.ProductID)
+	}
+
+	// 4. Request temporary link for specific version
+	formSpecific := url.Values{
+		"product_id":     {"geolite-city"},
+		"version":        {"2026-09-04"},
+		"duration_hours": {"6"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/products/temporary-link", strings.NewReader(formSpecific.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for specific version, got %d", rr.Code)
+	}
+
+	// 5. Request for non-existent product -> 404
+	formBad := url.Values{
+		"product_id": {"non-existent-product"},
+	}
+	req = httptest.NewRequest(http.MethodPost, "/admin/products/temporary-link", strings.NewReader(formBad.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("X-CSRF-Token", sessID)
+	req.AddCookie(sessionCookie)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for bad product, got %d", rr.Code)
+	}
+
+	// 6. Test that accessing /admin/products/download with token redirects to /v1/products/...
+	req = httptest.NewRequest(http.MethodGet, "/admin/products/download?product_id=geolite-city&token="+tok, nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusFound {
+		t.Errorf("expected 302 redirect for /admin/products/download with token, got %d", rr.Code)
+	}
+	loc := rr.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/v1/products/geolite-city/download") || !strings.Contains(loc, tok) {
+		t.Errorf("unexpected redirect location: %s", loc)
 	}
 }
 

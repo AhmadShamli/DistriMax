@@ -11,7 +11,7 @@
       <h2 style="font-size: 1.25rem; font-weight: 600;">{{.Product.DisplayName}}</h2>
       <span class="code-inline" style="font-size: 0.8rem;">ID: {{.Product.ID}} &bull; Edition: {{.Product.EditionID}} &bull; File: {{.Product.ArtifactFilename}}</span>
     </div>
-    <div style="display: flex; gap: 0.5rem; align-items: center;">
+    <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
       <span class="badge {{if .Product.IsEnabled}}badge-success{{else}}badge-neutral{{end}}">
         {{if .Product.IsEnabled}}ENABLED{{else}}DISABLED{{end}}
       </span>
@@ -19,6 +19,9 @@
         <a href="/admin/products/download?product_id={{.Product.ID}}" class="btn btn-secondary btn-sm" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.25rem;">
           ⬇️ Download MMDB
         </a>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="openTempDownloadModal('{{.Product.ID}}', '', '{{.Product.DisplayName}} (Current)')" style="display: inline-flex; align-items: center; gap: 0.25rem;" title="Generate & copy temporary direct download link">
+          🔗 Copy Temporary Link
+        </button>
       {{end}}
       <form action="/admin/products/sync" method="POST" style="display: inline;">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -75,6 +78,9 @@
             <a href="/admin/products/download?product_id={{.ProductID}}&version={{.Version}}" class="btn btn-secondary btn-sm" title="Download {{.Version}}" style="text-decoration: none;">
               ⬇️ Download
             </a>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="openTempDownloadModal('{{.ProductID}}', '{{.Version}}', '{{$.Product.DisplayName}} ({{.Version}})')" title="Copy temporary direct download link for version {{.Version}}">
+              🔗 Link
+            </button>
             {{if not .IsCurrent}}
               <form action="/admin/products/rollback" method="POST" onsubmit="return confirm('Promote version {{.Version}} to current? Active microservices will receive this version.');" style="display: inline;">
                 <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -97,4 +103,205 @@
   </div>
 </div>
 {{end}}
+
+<!-- Temporary Direct Download Link Modal -->
+<div id="tempLinkModalBackdrop" class="modal-backdrop" onclick="handleBackdropClick(event)">
+  <div class="modal-content">
+    <div class="modal-header">
+      <div class="modal-title">
+        <span>🔗</span> Temporary Direct Download Link
+      </div>
+      <button type="button" class="modal-close" onclick="closeTempDownloadModal()">&times;</button>
+    </div>
+
+    <div style="margin-bottom: 1.25rem;">
+      <p style="font-size: 0.95rem; font-weight: 600;" id="modalProductTitle">-</p>
+      <p style="font-size: 0.85rem; color: var(--text-muted); margin-top: 0.25rem;">
+        This temporary direct download link allows unauthenticated downloads without sharing administrative credentials or permanent API keys.
+      </p>
+    </div>
+
+    <div class="form-group">
+      <label for="tempLinkDuration">Link Expiration Period</label>
+      <select id="tempLinkDuration" onchange="generateTempDownloadLink()">
+        <option value="1">1 Hour</option>
+        <option value="6">6 Hours</option>
+        <option value="24" selected>24 Hours (1 Day)</option>
+        <option value="72">3 Days</option>
+        <option value="168">7 Days (1 Week)</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label for="tempDownloadUrl">Direct Download URL</label>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <input type="text" id="tempDownloadUrl" readonly style="font-family: var(--font-mono); font-size: 0.85rem;" onclick="this.select();">
+        <button type="button" class="btn btn-primary btn-sm" onclick="copyModalUrl()" id="btnCopyUrl" style="white-space: nowrap;">
+          Copy URL
+        </button>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 1.5rem;">
+      <label for="tempCurlCmd">Quick cURL Command</label>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <input type="text" id="tempCurlCmd" readonly style="font-family: var(--font-mono); font-size: 0.85rem;" onclick="this.select();">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="copyModalCurl()" id="btnCopyCurl" style="white-space: nowrap;">
+          Copy cURL
+        </button>
+      </div>
+    </div>
+
+    <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+      <span style="font-size: 0.8rem; color: var(--text-muted);" id="modalExpiryLabel">Expires in 24 hours</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="closeTempDownloadModal()">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Notification -->
+<div id="toastNotification" class="toast-notification">
+  ✓ Link copied to clipboard!
+</div>
+
+<script>
+let currentModalProductId = "";
+let currentModalVersion = "";
+let currentModalDisplayName = "";
+
+function openTempDownloadModal(productId, version, displayName) {
+  currentModalProductId = productId;
+  currentModalVersion = version;
+  currentModalDisplayName = displayName;
+
+  document.getElementById('modalProductTitle').textContent = displayName;
+  document.getElementById('tempLinkDuration').value = "24";
+  document.getElementById('tempDownloadUrl').value = "Generating temporary link...";
+  document.getElementById('tempCurlCmd').value = "Generating...";
+  document.getElementById('modalExpiryLabel').textContent = "Generating...";
+
+  document.getElementById('tempLinkModalBackdrop').classList.add('active');
+
+  generateTempDownloadLink(true);
+}
+
+function closeTempDownloadModal() {
+  document.getElementById('tempLinkModalBackdrop').classList.remove('active');
+}
+
+function handleBackdropClick(e) {
+  if (e.target === document.getElementById('tempLinkModalBackdrop')) {
+    closeTempDownloadModal();
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === "Escape") {
+    closeTempDownloadModal();
+  }
+});
+
+function showToast(msg) {
+  const toast = document.getElementById('toastNotification');
+  toast.textContent = msg;
+  toast.classList.add('active');
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => {
+    toast.classList.remove('active');
+  }, 3000);
+}
+
+function copyToClipboard(text, successMsg) {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast(successMsg || '✓ Copied to clipboard!');
+    }).catch(() => {
+      fallbackCopy(text, successMsg);
+    });
+  } else {
+    fallbackCopy(text, successMsg);
+  }
+}
+
+function fallbackCopy(text, successMsg) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-999999px";
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try {
+    document.execCommand('copy');
+    showToast(successMsg || '✓ Copied to clipboard!');
+  } catch (err) {
+    showToast('Link generated. Please copy from box.');
+  }
+  document.body.removeChild(ta);
+}
+
+function copyModalUrl() {
+  const val = document.getElementById('tempDownloadUrl').value;
+  if (val && !val.startsWith("Generating")) {
+    copyToClipboard(val, '✓ Temporary download URL copied to clipboard!');
+    const btn = document.getElementById('btnCopyUrl');
+    const oldText = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = oldText; }, 2000);
+  }
+}
+
+function copyModalCurl() {
+  const val = document.getElementById('tempCurlCmd').value;
+  if (val && !val.startsWith("Generating")) {
+    copyToClipboard(val, '✓ cURL command copied to clipboard!');
+    const btn = document.getElementById('btnCopyCurl');
+    const oldText = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = oldText; }, 2000);
+  }
+}
+
+async function generateTempDownloadLink(autoCopy = false) {
+  const duration = document.getElementById('tempLinkDuration').value;
+  const formData = new FormData();
+  formData.append('csrf_token', '{{.CSRFToken}}');
+  formData.append('product_id', currentModalProductId);
+  formData.append('version', currentModalVersion);
+  formData.append('duration_hours', duration);
+
+  try {
+    const res = await fetch('/admin/products/temporary-link', {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': '{{.CSRFToken}}'
+      },
+      body: formData
+    });
+
+    const data = await res.json();
+    if (!res.ok || data.status !== 'ok') {
+      alert('Error generating temporary link: ' + (data.error || res.statusText));
+      return;
+    }
+
+    // Resolve full download URL using browser window origin for accuracy
+    const resolvedUrl = new URL(data.download_path, window.location.origin).href;
+    const curlCommand = 'curl -L -O "' + resolvedUrl + '"';
+
+    document.getElementById('tempDownloadUrl').value = resolvedUrl;
+    document.getElementById('tempCurlCmd').value = curlCommand;
+
+    const expDate = new Date(data.expires_at);
+    document.getElementById('modalExpiryLabel').textContent =
+      'Expires: ' + expDate.toLocaleString() + ' (' + data.expires_in_hours + 'h)';
+
+    if (autoCopy) {
+      copyToClipboard(resolvedUrl, '✓ Temporary link copied to clipboard! (Valid ' + data.expires_in_hours + 'h)');
+    }
+  } catch (err) {
+    alert('Failed to connect to server: ' + err.message);
+  }
+}
+</script>
 {{end}}

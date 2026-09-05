@@ -46,8 +46,9 @@ func RunCleanup(ctx context.Context, database *db.DB, store storage.StorageBacke
 		result.PurgedAuditLogs = purgedLogs
 	}
 
-	// 3. Clean expired admin sessions
+	// 3. Clean expired admin sessions and temporary download tokens
 	_ = database.CleanExpiredSessions(ctx)
+	_, _ = database.CleanExpiredDownloadTokens(ctx)
 
 	return result, nil
 }

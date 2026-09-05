@@ -69,8 +69,8 @@ func TestDBOpenAndMigrations(t *testing.T) {
 	if err := database.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migCount); err != nil {
 		t.Fatalf("failed to count schema_migrations: %v", err)
 	}
-	if migCount != 2 {
-		t.Errorf("expected 2 applied schema migrations, got %d", migCount)
+	if migCount != 3 {
+		t.Errorf("expected 3 applied schema migrations, got %d", migCount)
 	}
 }
 
@@ -335,5 +335,94 @@ func TestAPIKeysAndAudit(t *testing.T) {
 	}
 	if stats.TotalRequests != 1 || stats.BytesTransferred != 75000000 {
 		t.Errorf("unexpected stats: %+v", stats)
+	}
+}
+
+func TestDownloadTokensAndProductVersions(t *testing.T) {
+	ctx := context.Background()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "tokens_test.sqlite3")
+
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer database.Close()
+	_ = RunMigrations(ctx, database.DB)
+
+	// Test GetProductVersion
+	pv := &ProductVersion{
+		ProductID:      "geolite-city",
+		Version:        "2026-09-01",
+		ReleasedAt:     time.Now().UTC(),
+		SHA256:         "sha256-test-1",
+		SizeBytes:      1024,
+		StorageBackend: "filesystem",
+		StoragePath:    "artifacts/geolite-city/2026-09-01/GeoLite2-City.mmdb",
+	}
+	if err := database.PublishNewVersion(ctx, pv, 30); err != nil {
+		t.Fatalf("PublishNewVersion failed: %v", err)
+	}
+
+	fetched, err := database.GetProductVersion(ctx, "geolite-city", "2026-09-01")
+	if err != nil {
+		t.Fatalf("GetProductVersion failed: %v", err)
+	}
+	if fetched.Version != "2026-09-01" || fetched.SHA256 != "sha256-test-1" {
+		t.Errorf("unexpected product version: %+v", fetched)
+	}
+
+	// Non-existent version
+	_, err = database.GetProductVersion(ctx, "geolite-city", "non-existent")
+	if err == nil {
+		t.Error("expected error for non-existent version, got nil")
+	}
+
+	// Test Download Tokens CRUD
+	expires := time.Now().UTC().Add(24 * time.Hour)
+	token := &DownloadToken{
+		Token:     "dmt_testtoken12345",
+		ProductID: "geolite-city",
+		Version:   "2026-09-01",
+		CreatedBy: "admin",
+		ExpiresAt: expires,
+	}
+	if err := database.CreateDownloadToken(ctx, token); err != nil {
+		t.Fatalf("CreateDownloadToken failed: %v", err)
+	}
+
+	gotToken, err := database.GetDownloadToken(ctx, "dmt_testtoken12345")
+	if err != nil {
+		t.Fatalf("GetDownloadToken failed: %v", err)
+	}
+	if gotToken.ProductID != "geolite-city" || gotToken.Version != "2026-09-01" || gotToken.DownloadCount != 0 || gotToken.IsRevoked {
+		t.Errorf("unexpected token state: %+v", gotToken)
+	}
+
+	// Increment usage
+	if err := database.IncrementDownloadTokenUsage(ctx, "dmt_testtoken12345"); err != nil {
+		t.Fatalf("IncrementDownloadTokenUsage failed: %v", err)
+	}
+	gotToken, _ = database.GetDownloadToken(ctx, "dmt_testtoken12345")
+	if gotToken.DownloadCount != 1 {
+		t.Errorf("expected download count 1, got %d", gotToken.DownloadCount)
+	}
+
+	// Revoke
+	if err := database.RevokeDownloadToken(ctx, "dmt_testtoken12345"); err != nil {
+		t.Fatalf("RevokeDownloadToken failed: %v", err)
+	}
+	gotToken, _ = database.GetDownloadToken(ctx, "dmt_testtoken12345")
+	if !gotToken.IsRevoked {
+		t.Errorf("expected token to be revoked")
+	}
+
+	// Cleanup
+	cleaned, err := database.CleanExpiredDownloadTokens(ctx)
+	if err != nil {
+		t.Fatalf("CleanExpiredDownloadTokens failed: %v", err)
+	}
+	if cleaned != 1 {
+		t.Errorf("expected 1 cleaned token, got %d", cleaned)
 	}
 }
