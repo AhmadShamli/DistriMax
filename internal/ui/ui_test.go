@@ -629,8 +629,14 @@ func TestProductTemporaryLinkGenerationAndDirectDownload(t *testing.T) {
 	if !strings.Contains(resp["download_url"].(string), tok) {
 		t.Errorf("expected download_url to contain token, got %v", resp["download_url"])
 	}
-	if !strings.Contains(resp["curl_command"].(string), "curl -L -O") {
-		t.Errorf("expected curl_command to contain curl -L -O, got %v", resp["curl_command"])
+	if !strings.Contains(resp["download_url"].(string), "GeoLite2-City.mmdb") {
+		t.Errorf("expected download_url to contain filename GeoLite2-City.mmdb, got %v", resp["download_url"])
+	}
+	if !strings.Contains(resp["curl_command"].(string), "curl -L -O") || !strings.Contains(resp["curl_command"].(string), "-J") {
+		t.Errorf("expected curl_command to contain curl -L -O and -J, got %v", resp["curl_command"])
+	}
+	if !strings.Contains(resp["curl_command"].(string), "GeoLite2-City.mmdb") {
+		t.Errorf("expected curl_command to contain filename GeoLite2-City.mmdb, got %v", resp["curl_command"])
 	}
 
 	// Verify token in DB
@@ -683,7 +689,7 @@ func TestProductTemporaryLinkGenerationAndDirectDownload(t *testing.T) {
 		t.Errorf("expected 302 redirect for /admin/products/download with token, got %d", rr.Code)
 	}
 	loc := rr.Header().Get("Location")
-	if !strings.HasPrefix(loc, "/v1/products/geolite-city/download") || !strings.Contains(loc, tok) {
+	if !strings.HasPrefix(loc, "/v1/products/geolite-city/download") || !strings.Contains(loc, tok) || !strings.Contains(loc, "GeoLite2-City.mmdb") {
 		t.Errorf("unexpected redirect location: %s", loc)
 	}
 }

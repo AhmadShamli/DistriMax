@@ -16,7 +16,7 @@
         {{if .Product.IsEnabled}}ENABLED{{else}}DISABLED{{end}}
       </span>
       {{if .CurrentVersion}}
-        <a href="/admin/products/download?product_id={{.Product.ID}}" class="btn btn-secondary btn-sm" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.25rem;">
+        <a href="/admin/products/download?product_id={{.Product.ID}}" download="{{.Product.ArtifactFilename}}" class="btn btn-secondary btn-sm" style="text-decoration: none; display: inline-flex; align-items: center; gap: 0.25rem;">
           ⬇️ Download MMDB
         </a>
         <button type="button" class="btn btn-secondary btn-sm" onclick="openTempDownloadModal('{{.Product.ID}}', '', '{{.Product.DisplayName}} (Current)')" style="display: inline-flex; align-items: center; gap: 0.25rem;" title="Generate & copy temporary direct download link">
@@ -75,7 +75,7 @@
             {{end}}
           </td>
           <td style="display: flex; gap: 0.5rem; align-items: center;">
-            <a href="/admin/products/download?product_id={{.ProductID}}&version={{.Version}}" class="btn btn-secondary btn-sm" title="Download {{.Version}}" style="text-decoration: none;">
+            <a href="/admin/products/download?product_id={{.ProductID}}&version={{.Version}}" download="{{$.Product.ArtifactFilename}}" class="btn btn-secondary btn-sm" title="Download {{.Version}}" style="text-decoration: none;">
               ⬇️ Download
             </a>
             <button type="button" class="btn btn-secondary btn-sm" onclick="openTempDownloadModal('{{.ProductID}}', '{{.Version}}', '{{$.Product.DisplayName}} ({{.Version}})')" title="Copy temporary direct download link for version {{.Version}}">
@@ -287,7 +287,7 @@ async function generateTempDownloadLink(autoCopy = false) {
 
     // Resolve full download URL using browser window origin for accuracy
     const resolvedUrl = new URL(data.download_path, window.location.origin).href;
-    const curlCommand = 'curl -L -O "' + resolvedUrl + '"';
+    const curlCommand = 'curl -L -O -J "' + resolvedUrl + '"';
 
     document.getElementById('tempDownloadUrl').value = resolvedUrl;
     document.getElementById('tempCurlCmd').value = curlCommand;

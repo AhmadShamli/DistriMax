@@ -49,6 +49,7 @@ func (s *Server) registerRoutes() {
 	// Client Download and Manifest API (Protected by API Key or Temporary Download Token)
 	s.router.Handle("GET /v1/products/{product}/manifest", RequireAPIKey(s.db, "manifest:read")(manifestHandler))
 	s.router.Handle("GET /v1/products/{product}/download", s.limiter.Limit(RequireDownloadAuth(s.db)(downloadHandler)))
+	s.router.Handle("GET /v1/products/{product}/download/{filename}", s.limiter.Limit(RequireDownloadAuth(s.db)(downloadHandler)))
 }
 
 func (s *Server) Handler() http.Handler {

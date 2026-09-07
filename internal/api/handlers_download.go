@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/AhmadShamli/DistriMax/internal/db"
@@ -38,6 +39,19 @@ func (h *DownloadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		JSONError(w, http.StatusInternalServerError, "database_error", "Failed to query product")
 		return
+	}
+
+	filename := product.ArtifactFilename
+	if filename == "" {
+		filename = fmt.Sprintf("%s.mmdb", product.ID)
+	}
+
+	if reqFilename := r.PathValue("filename"); reqFilename != "" {
+		unescapedReq, err := url.PathUnescape(reqFilename)
+		if err == nil && unescapedReq != filename && unescapedReq != product.ID && unescapedReq != product.ArtifactFilename {
+			JSONError(w, http.StatusNotFound, "artifact_not_found", fmt.Sprintf("Requested filename %q does not match product artifact %q", reqFilename, filename))
+			return
+		}
 	}
 
 	// 2. Fetch target version (specific version or active current version)
@@ -113,10 +127,10 @@ func (h *DownloadHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer stream.Close()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, product.ArtifactFilename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Accept-Ranges", "bytes")
 
 	// 6. Serve with Range support
-	http.ServeContent(w, r, product.ArtifactFilename, version.ReleasedAt, stream)
+	http.ServeContent(w, r, filename, version.ReleasedAt, stream)
 }

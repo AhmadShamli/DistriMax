@@ -408,5 +408,27 @@ func TestTemporaryDownloadToken(t *testing.T) {
 			}
 		}
 	}
+
+	// 8. Download with filename in route path
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download/GeoLite2-City.mmdb?token="+validTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK with filename in path, got %d, body: %s", rr.Code, rr.Body.String())
+	}
+	if rr.Body.String() != string(v2Content) {
+		t.Errorf("expected v2 content, got %q", rr.Body.String())
+	}
+	if rr.Header().Get("Content-Disposition") != `attachment; filename="GeoLite2-City.mmdb"` {
+		t.Errorf("expected attachment Content-Disposition, got %s", rr.Header().Get("Content-Disposition"))
+	}
+
+	// 9. Download with mismatched filename in path -> 404
+	req = httptest.NewRequest(http.MethodGet, "/v1/products/geolite-city/download/WrongName.mmdb?token="+validTok, nil)
+	rr = httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for mismatched filename in path, got %d", rr.Code)
+	}
 }
 

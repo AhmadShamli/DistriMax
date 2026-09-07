@@ -205,7 +205,12 @@ func (u *AdminUI) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		if r.URL.Path == "/admin/products/download" && r.URL.Query().Get("token") != "" {
 			productID := r.URL.Query().Get("product_id")
 			if productID != "" {
-				target := fmt.Sprintf("/v1/products/%s/download?%s", productID, r.URL.RawQuery)
+				var target string
+				if prod, err := u.db.GetProduct(r.Context(), productID); err == nil && prod != nil && prod.ArtifactFilename != "" {
+					target = fmt.Sprintf("/v1/products/%s/download/%s?%s", url.PathEscape(productID), url.PathEscape(prod.ArtifactFilename), r.URL.RawQuery)
+				} else {
+					target = fmt.Sprintf("/v1/products/%s/download?%s", url.PathEscape(productID), r.URL.RawQuery)
+				}
 				http.Redirect(w, r, target, http.StatusFound)
 				return
 			}
@@ -1149,13 +1154,18 @@ func (u *AdminUI) handleProductDownload(w http.ResponseWriter, r *http.Request) 
 	}
 	defer stream.Close()
 
+	filename := product.ArtifactFilename
+	if filename == "" {
+		filename = fmt.Sprintf("%s.mmdb", product.ID)
+	}
+
 	etag := fmt.Sprintf(`"%s"`, targetVersion.SHA256)
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, product.ArtifactFilename))
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Accept-Ranges", "bytes")
 
-	http.ServeContent(w, r, product.ArtifactFilename, targetVersion.ReleasedAt, stream)
+	http.ServeContent(w, r, filename, targetVersion.ReleasedAt, stream)
 }
 
 func (u *AdminUI) handleProductTemporaryLink(w http.ResponseWriter, r *http.Request) {
@@ -1240,15 +1250,20 @@ func (u *AdminUI) handleProductTemporaryLink(w http.ResponseWriter, r *http.Requ
 		host = "localhost:8080"
 	}
 
+	filename := product.ArtifactFilename
+	if filename == "" {
+		filename = fmt.Sprintf("%s.mmdb", productID)
+	}
+
 	var downloadPath string
 	if versionStr != "" {
-		downloadPath = fmt.Sprintf("/v1/products/%s/download?version=%s&token=%s", url.PathEscape(productID), url.QueryEscape(versionStr), url.QueryEscape(tokenStr))
+		downloadPath = fmt.Sprintf("/v1/products/%s/download/%s?version=%s&token=%s", url.PathEscape(productID), url.PathEscape(filename), url.QueryEscape(versionStr), url.QueryEscape(tokenStr))
 	} else {
-		downloadPath = fmt.Sprintf("/v1/products/%s/download?token=%s", url.PathEscape(productID), url.QueryEscape(tokenStr))
+		downloadPath = fmt.Sprintf("/v1/products/%s/download/%s?token=%s", url.PathEscape(productID), url.PathEscape(filename), url.QueryEscape(tokenStr))
 	}
 
 	fullURL := fmt.Sprintf("%s://%s%s", scheme, host, downloadPath)
-	curlCmd := fmt.Sprintf("curl -L -O %q", fullURL)
+	curlCmd := fmt.Sprintf("curl -L -O -J %q", fullURL)
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":           "ok",
